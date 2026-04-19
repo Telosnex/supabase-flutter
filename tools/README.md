@@ -98,7 +98,7 @@ git push origin :fix/foo
 dependency_overrides:
   realtime_client:
     git:
-      url: https://github.com/telosnex/supabase-flutter.git
+      url: https://github.com/Telosnex/supabase-flutter.git
       path: packages/realtime_client
       ref: telosnex/integration    # branch, not SHA
 ```
