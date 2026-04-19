@@ -34,6 +34,12 @@ FIX_BRANCHES=(
   fix/heartbeat-custom-access-token
   fix/delete-null-old-record
   fix/presence-transform-mutation
+  # The three below were derived from the TLA+ models in
+  # packages/realtime_client/formal_models/ and each has a dedicated
+  # Dart regression test verified red on upstream/main before the fix.
+  fix/disconnect-leak-reconnect-timer
+  fix/stale-pending-heartbeat-ref
+  fix/connect-sync-transport-throw
 )
 
 TOOLING_BRANCH="telosnex/tooling"
