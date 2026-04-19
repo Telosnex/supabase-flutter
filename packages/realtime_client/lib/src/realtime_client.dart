@@ -258,6 +258,15 @@ class RealtimeClient {
       );
     } catch (e) {
       /// General error handling
+      // If transport() threw synchronously, `conn = localConn` never ran so
+      // conn is still null, but connState is stuck at 'connecting'. Without
+      // this transition the socket is wedged: disconnect() sees conn == null
+      // and bails without touching connState, so only a later successful
+      // connect() can unstick it. Mirror the state transition from the
+      // `await localConn.ready` error path above.
+      if (connState == SocketStates.connecting) {
+        connState = SocketStates.closed;
+      }
       _onConnError(e);
     }
   }
