@@ -643,6 +643,45 @@ void main() {
       await mockedSocket.sendHeartbeat();
       verifyNever(() => mockedSink.add(any()));
     });
+
+    test('invokes customAccessToken on each heartbeat to rotate the JWT',
+        () async {
+      // Callers register customAccessToken to refresh the JWT without having
+      // to call setAuth themselves (mirrors realtime-js behavior). If
+      // sendHeartbeat passes the current token, setAuth's ?? chain
+      // short-circuits and customAccessToken is never consulted — the socket
+      // keeps authing with a stale JWT until the user manually calls setAuth.
+      var customCalls = 0;
+      final rotatingSocketChannel = MockIOWebSocketChannel();
+      final rotatingSink = MockWebSocketSink();
+
+      when(() => rotatingSocketChannel.sink).thenReturn(rotatingSink);
+      when(() => rotatingSocketChannel.ready)
+          .thenAnswer((_) => Future.value());
+      when(() => rotatingSink.close()).thenAnswer((_) => Future.value());
+
+      final rotatingSocket = RealtimeClient(
+        socketEndpoint,
+        transport: (_, __) => rotatingSocketChannel,
+        // Non-null initial token is what triggered the short-circuit.
+        params: {'apikey': 'initial-token'},
+        customAccessToken: () async {
+          customCalls++;
+          return 'rotated-token-$customCalls';
+        },
+      );
+
+      await rotatingSocket.connect();
+      rotatingSocket.connState = SocketStates.open;
+
+      await rotatingSocket.sendHeartbeat();
+
+      expect(customCalls, greaterThan(0),
+          reason:
+              'sendHeartbeat must consult customAccessToken so callers can '
+              'rotate JWTs without manual setAuth calls');
+      expect(rotatingSocket.accessToken, equals('rotated-token-1'));
+    });
   });
 
   group('connect/disconnect race condition', () {
