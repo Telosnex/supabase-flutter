@@ -99,6 +99,52 @@ void main() {
     });
   });
 
+  group('resend', () {
+    setUp(() {
+      socket = RealtimeClient('', timeout: const Duration(milliseconds: 1234));
+      channel =
+          RealtimeChannel('topic', socket, params: RealtimeChannelConfig());
+    });
+
+    test(
+        'generates a fresh ref when a previous timeout timer is still pending',
+        () {
+      // Mirrors what rejoinUntilConnected does: the socket dropped before the
+      // join ack arrived and a rejoin is attempted while the original 10s
+      // _timeoutTimer is still armed.
+      final joinPush = channel.joinPush;
+
+      joinPush.send();
+      expect(joinPush.ref, isNotEmpty,
+          reason: 'sanity check — first send assigns a ref');
+      final firstRef = joinPush.ref;
+
+      joinPush.resend(const Duration(seconds: 5));
+
+      expect(joinPush.ref, isNotEmpty,
+          reason:
+              'resend must cancel the stale timeout timer so startTimeout() '
+              'can assign a new ref');
+      expect(joinPush.ref, isNot(equals(firstRef)));
+    });
+
+    test('arms a new timeout timer on the fresh ref', () async {
+      final joinPush = channel.joinPush;
+      joinPush.send();
+
+      var timedOut = false;
+      joinPush.receive('timeout', (_) => timedOut = true);
+
+      joinPush.resend(const Duration(milliseconds: 20));
+
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(timedOut, isTrue,
+          reason:
+              'resend must schedule a new Timer; the old pending-Timer '
+              'reference must not block startTimeout()');
+    });
+  });
+
   group('onError', () {
     setUp(() {
       socket = RealtimeClient('/socket');
