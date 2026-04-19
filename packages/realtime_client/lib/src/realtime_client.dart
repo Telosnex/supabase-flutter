@@ -289,9 +289,14 @@ class RealtimeClient {
           await conn.sink.close();
         }
         connState = SocketStates.disconnected;
-        reconnectTimer.reset();
         log('transport', 'disconnected', null, Level.FINE);
       }
+      // Always cancel any pending reconnect — when disconnect() is called
+      // while connState == Closed (e.g. after a server-side drop, or via
+      // removeChannel()/removeAllChannels() auto-disconnect), _onConnClose
+      // has already scheduled a reconnect timer. Leaving it armed causes
+      // the socket to silently re-establish against user intent.
+      reconnectTimer.reset();
       this.conn = null;
 
       // remove open handles
