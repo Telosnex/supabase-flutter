@@ -1,0 +1,10 @@
+# telosnex fork: additive-only test files auto-combine during integration
+# merges. Our fix branches each append a regression test for their own bug;
+# when two branches both append at the end of the same group (natural anchor),
+# `ort` reports a conflict even though the two additions are semantically
+# independent. `merge=union` keeps both sides of any overlap, which is the
+# correct resolution for additive test changes.
+#
+# Scope: deliberately narrow to realtime_client's test directory. Source
+# files stay on `ort` so real semantic conflicts surface normally.
+packages/realtime_client/test/*.dart merge=union
