@@ -312,6 +312,50 @@ void main() {
       expect(socket.conn, isNull);
     });
 
+    test(
+        'disconnect() after a server-side drop cancels the pending reconnect '
+        'timer', () async {
+      // The reset() call inside disconnect() lives inside `if
+      // (shouldCloseSink)`, which is false when oldState == Closed. So after a
+      // server drop (which schedules a reconnect via _onConnClose), a user or
+      // library disconnect leaves the timer armed — it fires later and
+      // silently re-establishes the connection against user intent.
+      var transportCalls = 0;
+      final countingSocket = RealtimeClient(
+        'ws://localhost:${mockServer.port}',
+        // Short reconnect delay so the leak manifests quickly in test time.
+        reconnectAfterMs: (_) => 50,
+        transport: (url, headers) {
+          transportCalls++;
+          return IOWebSocketChannel.connect(url, headers: headers);
+        },
+      );
+
+      await countingSocket.connect();
+      expect(countingSocket.connState, SocketStates.open);
+      expect(transportCalls, 1);
+
+      // Server-side drop — _onConnClose schedules a reconnect.
+      await mockServer.close();
+      await Future.delayed(const Duration(milliseconds: 50));
+      expect(countingSocket.connState, SocketStates.closed);
+
+      // User-initiated disconnect. Intent: stay down.
+      await countingSocket.disconnect();
+      expect(countingSocket.conn, isNull);
+
+      // Wait past the 50ms reconnect delay.
+      await Future.delayed(const Duration(milliseconds: 200));
+
+      expect(transportCalls, 1,
+          reason:
+              'disconnect() must cancel the pending reconnect timer; the '
+              'scheduled timer must not silently reopen the socket after the '
+              'user has explicitly disconnected');
+      expect(countingSocket.conn, isNull,
+          reason: 'socket must stay down after user-initiated disconnect');
+    });
+
     test('disconnecting an open connection', () async {
       await socket.connect();
       expect(socket.connState, SocketStates.open);
