@@ -728,6 +728,35 @@ void main() {
     });
   });
 
+  group('connect transport synchronous throw', () {
+    test(
+        'connect() does not leave connState stuck at Connecting when transport '
+        'throws synchronously', () async {
+      // Custom transports (tests, platform implementations) can throw
+      // synchronously instead of returning a Future that errors. When that
+      // happens inside connect(), line `final WebSocketChannel localConn =
+      // transport(...)` raises before `conn = localConn` runs, the outer
+      // catch calls _onConnError (which doesn't touch connState), and the
+      // socket is wedged: connState stays at Connecting and conn is null.
+      // Subsequent disconnect() sees conn == null and returns, so the only
+      // way out is a later successful connect().
+      final socket = RealtimeClient(
+        socketEndpoint,
+        transport: (_, __) => throw StateError('synchronous transport failure'),
+      );
+
+      // Should not itself throw — the outer catch handles it.
+      await socket.connect();
+
+      expect(socket.conn, isNull);
+      expect(socket.connState, isNot(SocketStates.connecting),
+          reason:
+              'connState must not remain Connecting after a synchronous '
+              'transport throw; the socket is unrecoverable via disconnect() '
+              'in that state');
+    });
+  });
+
   group('connect/disconnect race condition', () {
     test(
         'connect does not crash if disconnect nullifies conn during await ready',
