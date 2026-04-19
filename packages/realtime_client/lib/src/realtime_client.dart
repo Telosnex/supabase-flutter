@@ -589,6 +589,10 @@ class RealtimeClient {
       payload: {},
       ref: pendingHeartbeatRef!,
     ));
-    await setAuth(accessToken);
+    // Pass null so setAuth's `token ?? customAccessToken() ?? accessToken`
+    // chain actually invokes customAccessToken. Passing the current
+    // accessToken short-circuits the first ?? and prevents JWT rotation.
+    // Mirrors realtime-js `_performAuth(null)` on each heartbeat.
+    await setAuth(null);
   }
 }
