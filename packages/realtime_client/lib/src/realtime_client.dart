@@ -498,6 +498,11 @@ class RealtimeClient {
     log('transport', 'connected', null, Level.FINE);
     _flushSendBuffer();
     reconnectTimer.reset();
+    // A fresh session starts clean. Any pendingHeartbeatRef here belongs to a
+    // previous socket that closed before its heartbeat reply arrived; leaving
+    // it set would cause the very next heartbeat tick to interpret this new
+    // session as a heartbeat-timeout and close it immediately.
+    pendingHeartbeatRef = null;
     if (heartbeatTimer != null) heartbeatTimer!.cancel();
     heartbeatTimer = Timer.periodic(
       Duration(milliseconds: heartbeatIntervalMs),
