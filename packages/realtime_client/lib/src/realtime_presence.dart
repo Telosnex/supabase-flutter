@@ -312,12 +312,16 @@ class RealtimePresence {
       if (presences is Map) {
         newStateMap[key] =
             (presences['metas'] as List).map<Presence>((presence) {
-          presence['presence_ref'] = presence['phx_ref'] as String;
+          // Shallow-copy so we don't mutate the caller's map. Re-processing
+          // the same server payload (e.g. via bindings on the raw 'message'
+          // stream, or the same state dispatched to two channels bound to
+          // one topic) would otherwise trip on a missing phx_ref the second
+          // time through.
+          final meta = Map<String, dynamic>.from(presence as Map);
+          meta['presence_ref'] = meta.remove('phx_ref') as String;
+          meta.remove('phx_ref_prev');
 
-          presence.remove('phx_ref');
-          presence.remove('phx_ref_prev');
-
-          return Presence.fromJson(presence);
+          return Presence.fromJson(meta);
         }).toList();
       } else {
         // presences is List<Presence>
