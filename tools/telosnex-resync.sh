@@ -40,6 +40,12 @@ FIX_BRANCHES=(
   fix/disconnect-leak-reconnect-timer
   fix/stale-pending-heartbeat-ref
   fix/connect-sync-transport-throw
+  # Diagnosed from a field log showing "Invalid JWTToken: Token has expired
+  # 29380 seconds ago" on iOS app resume after 8h suspension. Missing
+  # joinPush.receive('error', …) handler in RealtimeChannel constructor
+  # left channels stuck in `joining` forever after a server-side join
+  # rejection. The fix mirrors supabase-js / Phoenix JS exactly.
+  fix/channel-stuck-on-join-error
 )
 
 TOOLING_BRANCH="telosnex/tooling"
