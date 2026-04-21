@@ -133,9 +133,12 @@ class RealtimeChannel {
 
   @internal
   void rejoinUntilConnected() {
-    _rejoinTimer.scheduleTimeout();
     if (socket.isConnected) {
       rejoin();
+    } else {
+      // Poll only while no rejoin can be attempted. Once connected, the join
+      // outcome (ok/error/timeout) decides whether another retry is needed.
+      _rejoinTimer.scheduleTimeout();
     }
   }
 
