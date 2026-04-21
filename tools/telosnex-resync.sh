@@ -46,6 +46,26 @@ FIX_BRANCHES=(
   # left channels stuck in `joining` forever after a server-side join
   # rejection. The fix mirrors supabase-js / Phoenix JS exactly.
   fix/channel-stuck-on-join-error
+  # Discovered via the debug-sim menu entry (Supa.debugSimulateLongSleep
+  # Resume) after the channel-stuck-on-join-error fix was verified: the
+  # channel's `_rejoinTimer` callback auto-rescheduled itself at the top
+  # of `rejoinUntilConnected`, causing the timer to fire again on the
+  # *next* backoff interval regardless of whether the first rejoin was
+  # still awaiting a server reply. Modern supabase-js (delegating to
+  # @supabase/phoenix) and canonical Phoenix JS both do NOT
+  # auto-reschedule. The pre-phoenix supabase-js that this Dart port
+  # was derived from did — it was carried over verbatim and has been
+  # latent ever since.
+  fix/rejoin-timer-no-auto-reschedule
+  # Belt-and-suspenders for the above: `RealtimeChannel.rejoin()` also
+  # called `socket.leaveOpenTopic(topic)` which, with no identity check,
+  # could match the calling channel itself (when in joining/joined) and
+  # unsubscribe it. The doc-comment on `forceRejoin` already documented
+  # this hazard and worked around it for its own path; we extend the
+  # same protection to `rejoin()` via an `except:` parameter. Fires
+  # only if the auto-reschedule regresses or if external code drives
+  # rejoin() manually while the channel is live.
+  fix/rejoin-self-unsubscribe
 )
 
 TOOLING_BRANCH="telosnex/tooling"
