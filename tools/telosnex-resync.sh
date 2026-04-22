@@ -66,6 +66,19 @@ FIX_BRANCHES=(
   # only if the auto-reschedule regresses or if external code drives
   # rejoin() manually while the channel is live.
   fix/rejoin-self-unsubscribe
+  # Field repro: on iOS app resume after long background suspension,
+  # `WebSocketChannelException: HandshakeException: Connection terminated
+  # during handshake` fired once per channel, then silence — no recovery
+  # until app relaunch. connect()'s *inner* `await localConn.ready` catch
+  # already armed `reconnectTimer.scheduleTimeout()`; the *outer* catch
+  # (synchronous throws from transport() or anything else before the
+  # .ready await) did not. Completes what `fix/connect-sync-transport-
+  # throw`'s commit message explicitly deferred ("Conservative scope: no
+  # new reconnect scheduling here"). Same connState guard as the inner
+  # catch, and also moves `_onConnError(e)` inside the guard so a
+  # user-initiated disconnect mid-connect doesn't surface a spurious
+  # error to listeners.
+  fix/connect-sync-throw-schedule-reconnect
 )
 
 TOOLING_BRANCH="telosnex/tooling"
