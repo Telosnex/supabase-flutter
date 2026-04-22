@@ -79,6 +79,22 @@ FIX_BRANCHES=(
   # user-initiated disconnect mid-connect doesn't surface a spurious
   # error to listeners.
   fix/connect-sync-throw-schedule-reconnect
+  # Field repro: turning wifi off while the socket was connected
+  # produced a flat ~1024ms retry cadence forever (378 errors over
+  # ~40s in the captured log; no exponential backoff). Caused by an
+  # interaction between the earlier `fix/disconnect-leak-reconnect-
+  # timer` (which moved reconnectTimer.reset() to always fire in
+  # disconnect()) and the reconnect timer's callback, which called
+  # disconnect() before connect() on every tick — zeroing _tries each
+  # retry so scheduleTimeout() always computed `reconnectAfterMs(1)
+  # = firstDelay`.
+  #
+  # Fix: retry callback nulls `conn` directly and calls connect(),
+  # bypassing disconnect() entirely. Stacks cleanly with the earlier
+  # disconnect-leak fix; either branch alone also works, only
+  # together do they yield both invariants (user disconnect cancels
+  # armed reconnect AND retry callback preserves backoff).
+  fix/retry-callback-preserves-backoff-tries
 )
 
 TOOLING_BRANCH="telosnex/tooling"
