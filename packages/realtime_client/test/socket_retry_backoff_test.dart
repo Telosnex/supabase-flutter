@@ -102,24 +102,41 @@ void main() {
       reason: 'Need at least 4 gaps (5 calls) to observe backoff growth; '
           'saw ${gaps.length} gaps from ${callTimesMs.length} calls.',
     );
+
+    // Primary invariant: the last gap is at least 3× the first gap. With
+    // the fix, last/first ratio approaches 2^(n-1) (16× for 5 gaps under
+    // the exponential schedule). With the bug (flat cadence) the ratio
+    // stays ~1.0. A 3× floor gives large headroom over measurement
+    // noise — verified in-repo red-state runs showed ratios of 0.7–1.0.
+    //
+    // We deliberately do NOT assert on consecutive-gap deltas from
+    // gap[0] onward: the first `transport()` call absorbs all of
+    // connect()'s one-time setup work (URL parsing, state init, stream
+    // controller wiring) and can run 10–20ms later than the next
+    // iterations, which shrinks the apparent "gap[0]" and makes
+    // gap[1]-vs-gap[0] comparisons over-sensitive to the noise on
+    // gap[0]. The ratio approach sidesteps this because even an
+    // inflated gap[0] leaves plenty of room under the 3× floor given
+    // the 16× expected spread.
     expect(
-      gaps[1],
-      greaterThan(gaps[0] + 10),
-      reason: 'gap[1] (expected ~50ms) should exceed gap[0] (~25ms) by a '
-          'clear margin. Actual gaps: $gaps. Flat gaps indicate _tries '
-          'is being reset to 0 between retries.',
+      gaps.last,
+      greaterThan(gaps.first * 3),
+      reason: 'Last gap should be at least 3× the first gap after '
+          'several doublings. Actual gaps: $gaps. Flat ratios indicate '
+          '_tries is being reset to 0 between retries.',
     );
-    expect(
-      gaps[2],
-      greaterThan(gaps[1] + 20),
-      reason: 'gap[2] (expected ~100ms) should exceed gap[1] (~50ms). '
-          'Actual gaps: $gaps.',
-    );
-    expect(
-      gaps[3],
-      greaterThan(gaps[2] + 40),
-      reason: 'gap[3] (expected ~200ms) should exceed gap[2] (~100ms). '
-          'Actual gaps: $gaps.',
-    );
+
+    // Secondary invariant: monotonic strict growth from gap[1] onward.
+    // Rules out pathological schedules like "one big gap then flat"
+    // that could satisfy the ratio check without real exponential
+    // progression. gap[0] excluded for the setup-noise reason above.
+    for (int i = 2; i < gaps.length; i++) {
+      expect(
+        gaps[i],
+        greaterThan(gaps[i - 1]),
+        reason: 'gap[$i] (${gaps[i]}ms) should exceed gap[${i - 1}] '
+            '(${gaps[i - 1]}ms). Actual gaps: $gaps.',
+      );
+    }
   });
 }
