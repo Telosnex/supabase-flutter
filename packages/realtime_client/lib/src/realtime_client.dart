@@ -195,7 +195,36 @@ class RealtimeClient {
             callback(json.decode(payload));
     reconnectTimer = RetryTimer(
       () async {
-        await disconnect();
+        // Clean up the prior attempt's `conn` before retrying, so the
+        // guard `if (conn != null) return;` at the top of connect()
+        // doesn't short-circuit. We intentionally do NOT route through
+        // disconnect() here:
+        //
+        // disconnect() calls `reconnectTimer.reset()`, which zeroes
+        // `_tries`. That's correct for user-initiated disconnects (the
+        // next connect() is a fresh intent, should start backoff from
+        // the beginning) and for the `removeChannel()` auto-disconnect
+        // path. But when *this callback* fires, we are mid-retry-loop:
+        // resetting `_tries` to 0 means `scheduleTimeout()`'s next call
+        // computes the delay as `reconnectAfterMs(0 + 1) = firstDelay`,
+        // so every retry attempt uses the same initial interval. No
+        // exponential progression, ever.
+        //
+        // Field repro: turning wifi off while the socket is connected
+        // produced a flat ~1024ms retry cadence indefinitely (DNS fails
+        // every tick, callback loops, `_tries` never climbs past 1).
+        // Expected cadence: 1s, 2s, 4s, 8s, 10s, 10s, 10s, ... per the
+        // default `RetryTimer.createRetryFunction()`.
+        //
+        // Cleanup scope: by the time this callback runs, the previous
+        // attempt has already transitioned connState to `closed` via
+        // either the inner catch (DNS/handshake failure during
+        // `await localConn.ready`), the outer catch (synchronous throw
+        // from transport()), or `_onConnClose` (previously-open socket
+        // dropped). In each case the heartbeat timer has either never
+        // started (failed connect) or was cancelled in _onConnClose, so
+        // nothing besides the stale `conn` reference needs clearing.
+        conn = null;
         await connect();
       },
       this.reconnectAfterMs,
