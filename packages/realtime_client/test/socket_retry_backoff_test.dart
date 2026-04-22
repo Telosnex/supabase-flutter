@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:realtime_client/realtime_client.dart';
 import 'package:test/test.dart';
 import 'package:web_socket_channel/io.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// Regression test for the flat-retry-cadence bug (field repro: wifi off →
 /// infinite 1-second retries with no backoff progression).
