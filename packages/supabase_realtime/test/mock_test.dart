@@ -269,17 +269,7 @@ void main() {
     });
 
     test("correct CHANNEL_ERROR data on heartbeat timeout", () async {
-      final statusListener = expectAsync1((
-        RealtimeSubscribeStatusChange change,
-      ) {
-        if (change.status == RealtimeSubscribeStatus.channelError) {
-          expect(change.error, isA<RealtimeCloseEvent>());
-          final error = change.error as RealtimeCloseEvent;
-          expect(error.reason, "heartbeat timeout");
-        } else {
-          expect(change.status, RealtimeSubscribeStatus.closed);
-        }
-      }, count: 2);
+      final heartbeatError = Completer<RealtimeCloseEvent>();
 
       final channel = client.channel('public:todos');
       channel.onPostgresChanges(
@@ -293,7 +283,15 @@ void main() {
         ),
       );
 
-      channel.onStatusChange.listen(statusListener);
+      final statusSubscription = channel.onStatusChange.listen((change) {
+        final error = change.error;
+        if (change.status == RealtimeSubscribeStatus.channelError &&
+            error is RealtimeCloseEvent &&
+            error.reason == 'heartbeat timeout' &&
+            !heartbeatError.isCompleted) {
+          heartbeatError.complete(error);
+        }
+      });
       channel.subscribe();
 
       await Future.delayed(Duration(milliseconds: 200));
@@ -301,6 +299,11 @@ void main() {
         RealtimeConstants.webSocketCloseNormal,
         "heartbeat timeout",
       );
+      expect(
+        await heartbeatError.future.timeout(const Duration(seconds: 2)),
+        isA<RealtimeCloseEvent>(),
+      );
+      await statusSubscription.cancel();
     });
   });
 
