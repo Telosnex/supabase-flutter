@@ -45,6 +45,10 @@ class Push {
   void resend(Duration newTimeout) {
     _timeout = newTimeout;
     _cancelRefEvent();
+    // Without this, a previously-armed Timer reference keeps _timeoutTimer
+    // non-null, so startTimeout() will early-return inside send() and the
+    // message is pushed with an empty ref and no reply/timeout handler.
+    _cancelTimeout();
     _ref = '';
     _refEvent = null;
     _receivedResp = null;
