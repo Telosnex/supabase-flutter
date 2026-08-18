@@ -983,7 +983,9 @@ class RealtimeChannel {
     if (isLeaving) {
       return;
     }
-    socket.leaveOpenTopic(topic);
+    // Do not let this channel match itself as the duplicate while it is
+    // already joining or joined; rejoin must only evict sibling channels.
+    socket.leaveOpenTopic(topic, except: this);
     _state = ChannelState.joining;
     joinPush.resend(timeout ?? _timeout);
   }
