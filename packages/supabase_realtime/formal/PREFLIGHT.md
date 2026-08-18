@@ -127,6 +127,31 @@ shasum -a 256 /path/to/tla2tools.jar
 java -cp /path/to/tla2tools.jar tlc2.TLC -help
 ```
 
+## Conformance design
+
+The model and the Dart kernel stay locked together by mechanism, not by review
+discipline. The locks, in gate order:
+
+1. `formal/manifest.json` names every variable, domain, and action. The TLC
+   runner and a Dart parity test both fail on any disagreement with it.
+2. The kernel state is a `ModelState` record generated from the manifest. A
+   pure `step` function returns the next state plus effect values. A thin
+   non-branching shell executes effects under representation assertions.
+3. Every kernel step emits a trace line with manifest names. TLC trace
+   validation rejects any step outside the specification.
+4. Generated tests replay small-scope model behaviors against the kernel and
+   compare states field by field after every step.
+5. An action coverage check fails when any kernel action never appears in an
+   accepted trace.
+6. A defect reinjection audit applies each historical defect as a Dart mutant
+   from `formal/mutants/dart/`. Trace validation or a generated test must
+   catch each one without help from the handwritten regressions.
+
+Change protocol: a modeled behavior change touches spec, manifest, and kernel
+in one commit. A pure refactor lands alone when trace validation shows no
+modeled behavior changed. The reserved paths above do not exist yet. They land
+with Stage 1 and Stage 4 work, not in this preflight.
+
 ## Branch and review policy
 
 - Develop on `telosnex/realtime-v3-formal` from the pinned upstream revision.
