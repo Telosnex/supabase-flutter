@@ -359,6 +359,12 @@ class RealtimeClient {
         connectionState = SocketState.closed;
       }
       _onConnectionError(error);
+      // Mirror the async `ready` failure path: synchronous transport failures
+      // must also retry unless a concurrent user disconnect changed intent.
+      if (connectionState != SocketState.disconnected &&
+          connectionState != SocketState.disconnecting) {
+        reconnectTimer.scheduleTimeout();
+      }
     }
   }
 
@@ -370,6 +376,10 @@ class RealtimeClient {
   /// Disconnects the socket with status [code] and [reason] for the disconnect
   Future<void> disconnect({int? code, String? reason}) async {
     _cancelPendingDisconnect();
+    // Cancel reconnect regardless of connection state. This covers both a
+    // dropped socket and a synchronous transport failure that scheduled a
+    // retry before `connection` was assigned.
+    reconnectTimer.cancel();
     final connection = this.connection;
     if (connection != null) {
       final oldState = connectionState;
@@ -418,12 +428,6 @@ class RealtimeClient {
         connectionState = SocketState.disconnected;
         log('transport', 'disconnected', null, Level.FINE);
       }
-
-      // Cancel any reconnect scheduled by `_onConnectionClose`. When the socket
-      // has already dropped (`connectionState == closed`) the block above is
-      // skipped, so without this an armed backoff timer would fire after the
-      // user explicitly disconnected and silently reopen the connection.
-      reconnectTimer.cancel();
 
       this.connection = null;
       await _connectionSubscription?.cancel();
