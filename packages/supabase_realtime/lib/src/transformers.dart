@@ -374,18 +374,30 @@ Map<String, Map<String, dynamic>> getPayloadRecords(
     'old': {},
   };
 
+  // Tolerate missing/null record shapes so we don't crash on malformed or
+  // non-standard payloads. Mirrors realtime-js, which no-ops when the record
+  // is absent and leaves the default empty map in place.
+  final columns = payload['columns'];
+  final hasColumns = columns is List;
+
   if (payload['type'] == 'INSERT' || payload['type'] == 'UPDATE') {
-    records['new'] = convertChangeData(
-      List<Map<String, dynamic>>.from(payload['columns']),
-      Map<String, dynamic>.from(payload['record']),
-    );
+    final record = payload['record'];
+    if (hasColumns && record is Map) {
+      records['new'] = convertChangeData(
+        List.from(columns),
+        Map.from(record),
+      );
+    }
   }
 
   if (payload['type'] == 'UPDATE' || payload['type'] == 'DELETE') {
-    records['old'] = convertChangeData(
-      List<Map<String, dynamic>>.from(payload['columns']),
-      Map<String, dynamic>.from(payload['old_record']),
-    );
+    final oldRecord = payload['old_record'];
+    if (hasColumns && oldRecord is Map) {
+      records['old'] = convertChangeData(
+        List.from(columns),
+        Map.from(oldRecord),
+      );
+    }
   }
 
   return records;

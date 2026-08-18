@@ -268,6 +268,58 @@ void main() {
     });
   });
 
+  group('getPayloadRecords resilience', () {
+    // Parity with realtime-js: defensively no-op when the server omits
+    // record/old_record instead of throwing. Keeps a single malformed frame
+    // from breaking the entire realtime stream for the client.
+    final columns = [
+      {'name': 'id', 'type': 'int8'},
+    ];
+
+    test('DELETE without old_record returns empty old map', () {
+      final records = getPayloadRecords({
+        'type': 'DELETE',
+        'schema': 'public',
+        'table': 'todos',
+        'columns': columns,
+      });
+      expect(records['old'], equals(<String, dynamic>{}));
+      expect(records['new'], equals(<String, dynamic>{}));
+    });
+
+    test('DELETE with explicit null old_record returns empty old map', () {
+      final records = getPayloadRecords({
+        'type': 'DELETE',
+        'schema': 'public',
+        'table': 'todos',
+        'columns': columns,
+        'old_record': null,
+      });
+      expect(records['old'], equals(<String, dynamic>{}));
+    });
+
+    test('INSERT without record returns empty new map', () {
+      final records = getPayloadRecords({
+        'type': 'INSERT',
+        'schema': 'public',
+        'table': 'todos',
+        'columns': columns,
+      });
+      expect(records['new'], equals(<String, dynamic>{}));
+    });
+
+    test('payload without columns does not crash', () {
+      final records = getPayloadRecords({
+        'type': 'INSERT',
+        'schema': 'public',
+        'table': 'todos',
+        'record': {'id': 1},
+      });
+      expect(records['new'], equals(<String, dynamic>{}));
+      expect(records['old'], equals(<String, dynamic>{}));
+    });
+  });
+
   group('httpEndpointUrl', () {
     test('Converts a hosted Supabase WS URL', () {
       expect(
