@@ -47,22 +47,22 @@ and callback or stream APIs are adapter details.
 ## v3 regression baseline
 
 The historical v2.13 regressions compile unchanged in meaning against the
-pinned v3 API. The baseline run produced 31 passing tests and 16 failing test
-cases. A failure means the historical defect remains observable. It is not a
-branch failure at this stage.
+pinned v3 API. The baseline run produced 31 passes, 11 assertion failures, and
+5 errors. These 16 non-passing cases mean the historical defects remain
+observable. They are expected at this stage.
 
 | ID | Historical defect | v2.13 fork | v3 baseline | Candidate property |
 |---|---|---|---|---|
-| R01 | `Push.resend` retains the stale timeout timer | fixed | failing | Resend owns one fresh ref and timer |
-| R02 | Heartbeat bypasses `customAccessToken` | fixed | failing | Heartbeat observes current token generation |
-| R03 | Null or missing Postgres record fields crash | fixed | failing, four cases | Payload conversion is total |
-| R04 | Presence sync mutates its input | fixed | failing, two cases | Presence input is immutable |
-| R05 | A fresh socket inherits a pending heartbeat | fixed | failing | Fresh generation has no old heartbeat debt |
-| R06 | Synchronous transport throw leaves `connecting` | fixed | failing | Connection phase matches owned transport |
-| R07 | Join `phx_error` does not schedule rejoin | fixed | failing, two cases | Join rejection enters retryable error state |
-| R08 | Rejoin timer auto-reschedules while work is active | fixed | failing | At most one rejoin obligation exists |
-| R09 | Rejoin evicts its own channel | fixed | failing | Duplicate eviction excludes the caller |
-| R10 | Connect outer catch does not schedule reconnect | fixed | failing | Failed connect honors reconnect intent |
+| R01 | `Push.resend` retains the stale timeout timer | fixed | 2 assertion failures | Resend owns one fresh ref and timer |
+| R02 | Heartbeat bypasses `customAccessToken` | fixed | 1 assertion failure | Heartbeat observes current token generation |
+| R03 | Null or missing Postgres record fields crash | fixed | 4 errors | Payload conversion is total |
+| R04 | Presence sync mutates its input | fixed | 2 assertion failures | Presence input is immutable |
+| R05 | A fresh socket inherits a pending heartbeat | fixed | 1 assertion failure | Fresh generation has no old heartbeat debt |
+| R06 | Synchronous transport throw leaves `connecting` | fixed | 1 assertion failure | Connection phase matches owned transport |
+| R07 | Join `phx_error` does not schedule rejoin | fixed | 1 assertion failure, 1 error | Join rejection enters retryable error state |
+| R08 | Rejoin timer auto-reschedules while work is active | fixed | 1 assertion failure | At most one rejoin obligation exists |
+| R09 | Rejoin evicts its own channel | fixed | 1 assertion failure | Duplicate eviction excludes the caller |
+| R10 | Connect outer catch does not schedule reconnect | fixed | 1 assertion failure | Failed connect honors reconnect intent |
 
 R03 and R04 are deterministic data properties. Keep their Dart regressions,
 but do not force them into a lifecycle state-machine model.
@@ -84,8 +84,8 @@ dart test \
   test/socket_outer_catch_reconnect_test.dart
 ```
 
-Expected baseline: exit nonzero with the 16 known failures above. Any different
-result requires review before modeling or refactoring.
+Expected baseline: exit 1 with 31 passes, 11 assertion failures, and 5 errors.
+Any different result requires review before modeling or refactoring.
 
 ## Planned formal gate
 
@@ -132,25 +132,38 @@ java -cp /path/to/tla2tools.jar tlc2.TLC -help
 The model and the Dart kernel stay locked together by mechanism, not by review
 discipline. The locks, in gate order:
 
-1. `formal/manifest.json` names every variable, domain, and action. The TLC
-   runner and a Dart parity test both fail on any disagreement with it.
-2. The kernel state is a `ModelState` record generated from the manifest. A
-   pure `step` function returns the next state plus effect values. A thin
-   non-branching shell executes effects under representation assertions.
-3. Every kernel step emits a trace line with manifest names. TLC trace
-   validation rejects any step outside the specification.
-4. Generated tests replay small-scope model behaviors against the kernel and
-   compare states field by field after every step.
-5. An action coverage check fails when any kernel action never appears in an
-   accepted trace.
-6. A defect reinjection audit applies each historical defect as a Dart mutant
-   from `formal/mutants/dart/`. Trace validation or a generated test must
-   catch each one without help from the handwritten regressions.
+1. `formal/manifest.json` names every state field, event, action, effect, and
+   trace encoding. A generator emits both the TLA+ schema and Dart schema. A
+   check-mode regeneration fails on any byte difference. Finite TLC bounds
+   remain in configs so production refs and generations are not bounded.
+2. The kernel owns one immutable `ModelState` with exactly the manifest fields.
+   A total deterministic `step(ModelState, Event)` returns disposition, action,
+   post-state, and ordered effects. Every environment choice is an event value.
+3. For finite scope B, TLC exports every reachable state `R_B`, every event
+   `E_B`, and one transition-oracle row for every pair in `R_B × E_B`. A Dart
+   test compares the real kernel with every row, field by field. Missing rows or
+   two results for one pair fail. This proves both finite inclusions.
+4. Every kernel step emits a schema-hashed trace. TLC `-loadTrace json`
+   validation rejects any observed step outside the model at larger scopes.
+5. An action and invariant coverage check fails on missing fields, events,
+   oracle rows, traces, invariant evaluations, or expected mutant failures.
+6. The ten lifecycle defects (#1, #2, #5–#12 in the ADR) become TLA+ mutants and
+   Dart patches under `formal/mutants/`. The formal harness must catch each
+   without its handwritten regression. Property tests catch mutant forms of
+   the two data defects (#3 and #4), which remain outside the lifecycle model.
 
-Change protocol: a modeled behavior change touches spec, manifest, and kernel
-in one commit. A pure refactor lands alone when trace validation shows no
-modeled behavior changed. The reserved paths above do not exist yet. They land
-with Stage 1 and Stage 4 work, not in this preflight.
+The shell can classify external outcomes into events but cannot read or mutate
+`ModelState` or make lifecycle decisions. An architecture test enforces that
+boundary. Representation assertions tie timer and transport handles to state
+obligations and generations.
+
+Change protocol: a contract change touches the spec, kernel, and tests in one
+commit, plus the manifest and generated schemas when vocabulary changes. A Dart
+correction can leave the model untouched when it makes divergent code conform
+to that model. A pure refactor lands alone only when finite oracle equivalence
+and runtime trace validation show no modeled behavior changed. The reserved
+paths above do not exist yet. They land with model and kernel work, not in this
+preflight.
 
 ## Branch and review policy
 
@@ -158,5 +171,6 @@ with Stage 1 and Stage 4 work, not in this preflight.
 - Keep formal assets free of Telosnex application dependencies and vocabulary.
 - Separate baseline tests, model and tooling, instrumentation, and behavior
   changes into reviewable commits.
-- Update the model before changing modeled lifecycle behavior.
+- Establish a contract change in the model before or atomically with its Dart
+  implementation. Never change both independently and reconcile them later.
 - Do not adopt v3 in the Telosnex application as part of this work.
