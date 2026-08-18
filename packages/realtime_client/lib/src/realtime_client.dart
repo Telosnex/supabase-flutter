@@ -311,6 +311,12 @@ class RealtimeClient {
       );
     } catch (e) {
       /// General error handling
+      // A synchronous transport throw happens after entering `connecting` but
+      // before assigning `connection`. Recover the state so the client is not
+      // wedged at connecting with no connection for disconnect() to close.
+      if (connState == SocketStates.connecting) {
+        connState = SocketStates.closed;
+      }
       _onConnError(e);
     }
   }
