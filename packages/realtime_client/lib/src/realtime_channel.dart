@@ -94,6 +94,18 @@ class RealtimeChannel {
       _rejoinTimer.scheduleTimeout();
     });
 
+    // A rejected phx_join is a channel error, not a socket error. Without a
+    // receiver here the status listener sees the rejection, but the channel
+    // remains stuck in `joining` and never retries with a refreshed token.
+    joinPush.receive('error', (reason) {
+      if (isLeaving || isClosed) {
+        return;
+      }
+      socket.log('channel', 'error $topic', reason);
+      _state = ChannelStates.errored;
+      _rejoinTimer.scheduleTimeout();
+    });
+
     onEvents(ChannelEvents.reply.eventName(), ChannelFilter(), (
       payload, [
       ref,
