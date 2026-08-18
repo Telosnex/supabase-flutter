@@ -54,7 +54,7 @@ observable. They are expected at this stage.
 | ID | Historical defect | v2.13 fork | v3 baseline | Candidate property |
 |---|---|---|---|---|
 | R01 | `Push.resend` retains the stale timeout timer | fixed | 2 assertion failures | Resend owns one fresh ref and timer |
-| R02 | Heartbeat bypasses `customAccessToken` | fixed | 1 assertion failure | Heartbeat observes current token generation |
+| R02 | Heartbeat bypasses `customAccessToken` | fixed | 1 assertion failure | Each normal heartbeat requests the current token source once |
 | R03 | Null or missing Postgres record fields crash | fixed | 4 errors | Payload conversion is total |
 | R04 | Presence sync mutates its input | fixed | 2 assertion failures | Presence input is immutable |
 | R05 | A fresh socket inherits a pending heartbeat | fixed | 1 assertion failure | Fresh generation has no old heartbeat debt |
