@@ -34,10 +34,9 @@ FIX_BRANCHES=(
   fix/heartbeat-custom-access-token
   fix/delete-null-old-record
   fix/presence-transform-mutation
-  # The three below were derived from the TLA+ models in
+  # The two below were derived from the TLA+ models in
   # packages/realtime_client/formal_models/ and each has a dedicated
   # Dart regression test verified red on upstream/main before the fix.
-  fix/disconnect-leak-reconnect-timer
   fix/stale-pending-heartbeat-ref
   fix/connect-sync-transport-throw
   # Diagnosed from a field log showing "Invalid JWTToken: Token has expired
@@ -79,22 +78,6 @@ FIX_BRANCHES=(
   # user-initiated disconnect mid-connect doesn't surface a spurious
   # error to listeners.
   fix/connect-sync-throw-schedule-reconnect
-  # Field repro: turning wifi off while the socket was connected
-  # produced a flat ~1024ms retry cadence forever (378 errors over
-  # ~40s in the captured log; no exponential backoff). Caused by an
-  # interaction between the earlier `fix/disconnect-leak-reconnect-
-  # timer` (which moved reconnectTimer.reset() to always fire in
-  # disconnect()) and the reconnect timer's callback, which called
-  # disconnect() before connect() on every tick — zeroing _tries each
-  # retry so scheduleTimeout() always computed `reconnectAfterMs(1)
-  # = firstDelay`.
-  #
-  # Fix: retry callback nulls `conn` directly and calls connect(),
-  # bypassing disconnect() entirely. Stacks cleanly with the earlier
-  # disconnect-leak fix; either branch alone also works, only
-  # together do they yield both invariants (user disconnect cancels
-  # armed reconnect AND retry callback preserves backoff).
-  fix/retry-callback-preserves-backoff-tries
 )
 
 TOOLING_BRANCH="telosnex/tooling"
@@ -106,7 +89,7 @@ ORIGIN_REMOTE="origin"
 # Paths to run dart test + dart analyze against. Add more as fixes land in
 # other packages.
 TEST_PACKAGES=(
-  packages/realtime_client
+  packages/supabase_realtime
 )
 
 # ------------------------------------------------------------------- flags ---
@@ -167,7 +150,9 @@ if [[ $RUN_TESTS -eq 1 ]]; then
   echo "==> Running tests + analyzer"
   for pkg in "${TEST_PACKAGES[@]}"; do
     echo "  - $pkg"
-    ( cd "$pkg" && dart test && dart analyze --fatal-infos )
+    # Docker-backed integration tests are validated separately when their
+    # services are running; the resync gate is the complete unit suite.
+    ( cd "$pkg" && dart test --exclude-tags integration && dart analyze --fatal-infos )
   done
 fi
 
@@ -179,4 +164,4 @@ fi
 echo ""
 echo "✓ $INTEGRATION_BRANCH rebuilt from $(git rev-parse --short "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH") + ${#FIX_BRANCHES[@]} fix(es) + tooling."
 echo "  Consumers on 'ref: $INTEGRATION_BRANCH' pick this up via:"
-echo "      flutter pub upgrade realtime_client"
+echo "      flutter pub upgrade supabase_realtime"

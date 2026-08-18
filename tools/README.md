@@ -96,10 +96,10 @@ git push origin :fix/foo
 
 ```yaml
 dependency_overrides:
-  realtime_client:
+  supabase_realtime:
     git:
       url: https://github.com/Telosnex/supabase-flutter.git
-      path: packages/realtime_client
+      path: packages/supabase_realtime
       ref: telosnex/integration    # branch, not SHA
 ```
 
@@ -107,18 +107,18 @@ Then in your app repo:
 
 ```bash
 flutter pub get                    # first time
-flutter pub upgrade realtime_client  # after each fork resync
+flutter pub upgrade supabase_realtime  # after each fork resync
 ```
 
 Tracking the **branch** (not a SHA) means `pubspec.yaml` never needs to be
 touched after a resync. `pubspec.lock` will still pin to an exact commit
 (the `resolved-ref` field), so builds are reproducible — `flutter pub
-upgrade realtime_client` is the deliberate "adopt latest" step.
+upgrade supabase_realtime` is the deliberate "adopt latest" step.
 
 If you need to override other packages (`supabase`, `supabase_flutter`)
 at the same monorepo SHA, add matching entries pointing at the same
 `ref` and the corresponding `path:`. Usually unnecessary — overriding
-`realtime_client` alone flows through the transitive deps.
+`supabase_realtime` alone flows through the transitive deps.
 
 ## Filing upstream PRs
 
