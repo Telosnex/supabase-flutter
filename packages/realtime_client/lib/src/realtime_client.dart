@@ -790,6 +790,10 @@ class RealtimeClient {
       ),
     );
     _heartbeatController.add(RealtimeHeartbeatStatus.sent);
-    await setAuth(accessToken);
+    // Pass null so setAuth's
+    // `token ?? customAccessToken() ?? accessToken` chain actually invokes
+    // customAccessToken. Passing the current accessToken short-circuits the
+    // first `??` and prevents JWT rotation.
+    await setAuth(null);
   }
 }
