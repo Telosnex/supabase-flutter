@@ -10,6 +10,7 @@ import 'package:supabase_realtime/supabase_realtime.dart';
 import 'package:supabase_realtime/src/constants.dart';
 import 'package:supabase_realtime/src/kernel/generated/model_schema.dart';
 import 'package:supabase_realtime/src/kernel/realtime_socket_driver.dart';
+import 'package:supabase_realtime/src/kernel/socket_representation.dart';
 import 'package:supabase_realtime/src/message.dart';
 import 'package:supabase_realtime/src/retry_timer.dart';
 import 'package:supabase_realtime/src/serializer.dart';
@@ -658,24 +659,21 @@ class RealtimeClient {
     };
   }
 
-  bool _socketRepresentationMatches(SocketModelState state) {
-    final ownsTransport = state.activeGeneration > 0;
-    return (!state.reconnectTimer.armed ||
-            state.reconnectTimer.id == _kernelReconnectTimerId) &&
-        (!state.heartbeatTimer.armed ||
-            state.heartbeatTimer.id == _kernelHeartbeatTimerId) &&
-        (!state.disconnectTimer.armed ||
-            state.disconnectTimer.id == _kernelDisconnectTimerId) &&
-        (!state.pendingHeartbeat.active ||
-            _kernelPendingHeartbeatRef != null) &&
-        (!state.pendingHeartbeat.active ||
-            (state.pendingHeartbeat.ref == _kernelPendingHeartbeatRef &&
-                state.pendingHeartbeat.generation ==
-                    _kernelPendingHeartbeatGeneration)) &&
-        (!ownsTransport ||
-            _connectionsByGeneration.containsKey(state.activeGeneration) ||
-            _terminalGenerationsReported.contains(state.activeGeneration));
-  }
+  bool _socketRepresentationMatches(SocketModelState state) =>
+      socketRepresentationMatches(state, _socketShellSnapshot());
+
+  SocketShellSnapshot _socketShellSnapshot() => SocketShellSnapshot(
+    reconnectTimerLive: _kernelReconnectTimer?.isActive ?? false,
+    reconnectTimerId: _kernelReconnectTimerId,
+    heartbeatTimerLive: heartbeatTimer?.isActive ?? false,
+    heartbeatTimerId: _kernelHeartbeatTimerId,
+    disconnectTimerLive: _pendingDisconnectTimer?.isActive ?? false,
+    disconnectTimerId: _kernelDisconnectTimerId,
+    pendingHeartbeatRef: _kernelPendingHeartbeatRef,
+    pendingHeartbeatGeneration: _kernelPendingHeartbeatGeneration,
+    transportGenerations: _connectionsByGeneration.keys.toSet(),
+    terminalGenerationsReported: _terminalGenerationsReported,
+  );
 
   void _executeSocketEffect(
     SocketModelEffect effect,
@@ -825,8 +823,11 @@ class RealtimeClient {
   }) async {
     final generation = event.generation!;
     if (!_terminalGenerationsReported.add(generation)) return;
-    _socketDriver.post(event, cause: cause, metadata: metadata);
+    // Disposed before the event is posted, so the shell never holds a handle
+    // for a generation the model has already released. Posting first would
+    // leave a window at quiescence where the two disagree.
     await _disposeGeneration(generation);
+    _socketDriver.post(event, cause: cause, metadata: metadata);
   }
 
   /// Starts closing a transport. Non-blocking: the close outcome is posted
