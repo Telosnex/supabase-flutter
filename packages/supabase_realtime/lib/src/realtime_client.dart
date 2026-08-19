@@ -687,6 +687,15 @@ class RealtimeClient {
   }
 
   Future<void> _openTransport(int generation) async {
+    // The model committed this OpenTransport obligation, but effects run after
+    // the commit and other events may have been processed in between. If the
+    // model no longer owns this attempt, opening a transport here would create
+    // a resource the model does not know about and nothing would ever close it
+    // (ADR-013 S1: no transport opens while intent is down).
+    if (_socketDriver.state.activeGeneration != generation) {
+      log('transport', 'open superseded before connect', null, Level.FINE);
+      return;
+    }
     log('transport', 'connecting to $endpointUrl', null);
     log('transport', 'connecting', null, Level.FINE);
     final WebSocketChannel localConnection;
