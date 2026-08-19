@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:meta/meta.dart';
 import 'package:supabase_realtime/src/constants.dart';
 import 'package:supabase_realtime/src/kernel/generated/model_schema.dart';
+import 'package:supabase_realtime/src/kernel/push_representation.dart';
 import 'package:supabase_realtime/src/kernel/realtime_push_driver.dart';
 import 'package:supabase_realtime/src/message.dart';
 import 'package:supabase_realtime/src/types.dart';
@@ -115,9 +116,15 @@ class Push {
   }
 
   bool _pushRepresentationMatches(PushModelState state) =>
-      (!state.timeoutTimer.armed || state.timeoutTimer.id == _timeoutTimerId) &&
-      (state.phase != PushPhase.pending || _refEvent != null) &&
-      (state.phase != PushPhase.pending || _ref.isNotEmpty);
+      pushRepresentationMatches(
+        state,
+        PushShellSnapshot(
+          timeoutTimerLive: _timeoutTimer?.isActive ?? false,
+          timeoutTimerId: _timeoutTimerId,
+          replyBound: _refEvent != null,
+          ref: _ref,
+        ),
+      );
 
   void _bindReply(int modelRef) {
     _cancelRefEvent();

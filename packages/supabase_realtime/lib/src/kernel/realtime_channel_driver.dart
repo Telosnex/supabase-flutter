@@ -6,11 +6,12 @@ import 'generated/model_schema.dart';
 import 'realtime_channel_kernel.dart';
 import 'realtime_socket_driver.dart' show SocketTraceSink;
 
+/// Executes a single committed effect.
+///
+/// Executors must not block: effect batches are atomic with respect to the
+/// event queue, which does not advance until the batch completes.
 typedef ChannelEffectExecutor =
-    FutureOr<void> Function(
-      ChannelModelEffect effect,
-      Object? metadata,
-    );
+    void Function(ChannelModelEffect effect, Object? metadata);
 typedef ChannelRepresentationValidator =
     bool Function(
       ChannelModelState state,
@@ -42,7 +43,6 @@ final class RealtimeChannelDriver {
   ChannelModelState _state;
   var _sequence = 0;
   var _draining = false;
-  var _activeEffectBatches = 0;
 
   ChannelModelState get state => _state;
   int get activeJoinEpoch => _state.activeJoinEpoch;
@@ -91,34 +91,33 @@ final class RealtimeChannelDriver {
           'postState': result.postState.toJson(),
           'effects': result.effects.map((effect) => effect.toJson()).toList(),
         });
-        unawaited(_runEffects(request, result));
+        _runEffects(request, result);
       }
+      // Checked at quiescence rather than per batch. An effect may enqueue a
+      // follow-up event, so mid-cascade states are legitimately transient;
+      // only the settled state must match the model's obligations.
+      assert(
+        _validateRepresentation?.call(_state) ?? true,
+        'Channel shell resources do not match model obligations',
+      );
     } finally {
       _draining = false;
     }
   }
 
-  Future<void> _runEffects(
-    _ChannelRequest request,
-    ChannelTransitionResult result,
-  ) async {
-    _activeEffectBatches++;
+  /// Runs one committed effect batch to completion.
+  ///
+  /// Batches are synchronous and atomic with respect to the event queue: no
+  /// event can be observed between a state commit and the last effect of the
+  /// batch that commit produced.
+  void _runEffects(_ChannelRequest request, ChannelTransitionResult result) {
     try {
       for (final effect in result.effects) {
-        final execution = _executeEffect(effect, request.metadata);
-        if (execution is Future) await execution;
+        _executeEffect(effect, request.metadata);
       }
       request.completer.complete(result);
     } catch (error, stackTrace) {
       request.completer.completeError(error, stackTrace);
-    } finally {
-      _activeEffectBatches--;
-      if (_activeEffectBatches == 0) {
-        assert(
-          _validateRepresentation?.call(_state) ?? true,
-          'Channel shell resources do not match model obligations',
-        );
-      }
     }
   }
 }

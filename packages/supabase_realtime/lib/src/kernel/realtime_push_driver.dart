@@ -6,11 +6,12 @@ import 'generated/model_schema.dart';
 import 'realtime_push_kernel.dart';
 import 'realtime_socket_driver.dart' show SocketTraceSink;
 
+/// Executes a single committed effect.
+///
+/// Executors must not block: effect batches are atomic with respect to the
+/// event queue, which does not advance until the batch completes.
 typedef PushEffectExecutor =
-    FutureOr<void> Function(
-      PushModelEffect effect,
-      Object? metadata,
-    );
+    void Function(PushModelEffect effect, Object? metadata);
 typedef PushRepresentationValidator = bool Function(PushModelState state);
 
 /// Serial event queue and sole state owner for one push exchange.
@@ -39,7 +40,6 @@ final class RealtimePushDriver {
   PushModelState _state = RealtimePushKernel.initialState;
   var _sequence = 0;
   var _draining = false;
-  var _activeEffectBatches = 0;
 
   PushModelState get state => _state;
   bool get sent => _state.sent;
@@ -86,34 +86,33 @@ final class RealtimePushDriver {
           'postState': result.postState.toJson(),
           'effects': result.effects.map((effect) => effect.toJson()).toList(),
         });
-        unawaited(_runEffects(request, result));
+        _runEffects(request, result);
       }
+      // Checked at quiescence rather than per batch. An effect may enqueue a
+      // follow-up event, so mid-cascade states are legitimately transient;
+      // only the settled state must match the model's obligations.
+      assert(
+        _validateRepresentation?.call(_state) ?? true,
+        'Push shell resources do not match model obligations',
+      );
     } finally {
       _draining = false;
     }
   }
 
-  Future<void> _runEffects(
-    _PushRequest request,
-    PushTransitionResult result,
-  ) async {
-    _activeEffectBatches++;
+  /// Runs one committed effect batch to completion.
+  ///
+  /// Batches are synchronous and atomic with respect to the event queue: no
+  /// event can be observed between a state commit and the last effect of the
+  /// batch that commit produced.
+  void _runEffects(_PushRequest request, PushTransitionResult result) {
     try {
       for (final effect in result.effects) {
-        final execution = _executeEffect(effect, request.metadata);
-        if (execution is Future) await execution;
+        _executeEffect(effect, request.metadata);
       }
       request.completer.complete(result);
     } catch (error, stackTrace) {
       request.completer.completeError(error, stackTrace);
-    } finally {
-      _activeEffectBatches--;
-      if (_activeEffectBatches == 0) {
-        assert(
-          _validateRepresentation?.call(_state) ?? true,
-          'Push shell resources do not match model obligations',
-        );
-      }
     }
   }
 }

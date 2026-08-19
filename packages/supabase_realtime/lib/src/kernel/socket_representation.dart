@@ -89,12 +89,22 @@ bool socketRepresentationMatches(
     _pendingHeartbeatMatches(state.pendingHeartbeat, shell) &&
     _transportsMatch(state, shell);
 
+/// Whether the shell's timer bookkeeping matches a timer obligation.
+///
+/// When armed, the shell must have accepted responsibility for exactly this
+/// obligation. Liveness is deliberately not required: a one-shot timer that
+/// has already fired is legitimately waiting for the model to process its
+/// event, and during that window no timer is scheduled while the obligation is
+/// still recorded as armed.
+///
+/// When disarmed, nothing may be scheduled and no id may be retained. This is
+/// the leak-detecting direction.
 bool _timerMatches({
   required bool armed,
   required int obligationId,
   required bool live,
   required int? liveId,
-}) => armed ? live && liveId == obligationId : !live && liveId == null;
+}) => armed ? liveId == obligationId : !live && liveId == null;
 
 bool _pendingHeartbeatMatches(HeartbeatDebt debt, SocketShellSnapshot shell) =>
     debt.active

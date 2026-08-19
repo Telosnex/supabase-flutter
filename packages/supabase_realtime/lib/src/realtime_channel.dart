@@ -8,6 +8,7 @@ import 'package:meta/meta.dart';
 import 'package:supabase_realtime/supabase_realtime.dart';
 import 'package:supabase_realtime/src/constants.dart';
 import 'package:supabase_realtime/src/kernel/generated/model_schema.dart';
+import 'package:supabase_realtime/src/kernel/channel_representation.dart';
 import 'package:supabase_realtime/src/kernel/realtime_channel_driver.dart';
 import 'package:supabase_realtime/src/push.dart';
 import 'package:supabase_realtime/src/realtime_presence.dart';
@@ -219,11 +220,15 @@ class RealtimeChannel {
     }
   }
 
-  bool _channelRepresentationMatches(ChannelModelState state) {
-    return (!state.rejoinTimer.armed ||
-            state.rejoinTimer.id == _kernelRejoinTimerId) &&
-        (state.phase != ChannelPhase.joining || joinPush.ref.isNotEmpty);
-  }
+  bool _channelRepresentationMatches(ChannelModelState state) =>
+      channelRepresentationMatches(
+        state,
+        ChannelShellSnapshot(
+          rejoinTimerLive: _kernelRejoinTimer?.isActive ?? false,
+          rejoinTimerId: _kernelRejoinTimerId,
+          joinRef: joinPush.ref,
+        ),
+      );
 
   void _armKernelRejoinTimer(int timerId) {
     _kernelRejoinTimer?.cancel();
@@ -231,6 +236,10 @@ class RealtimeChannel {
     _rejoinAttempt++;
     _kernelRejoinTimer = Timer(socket.reconnectAfter(_rejoinAttempt), () {
       if (_kernelRejoinTimerId != timerId) return;
+      // The id is deliberately retained until the model processes the fired
+      // event. Clearing it here would leave the shell disclaiming a timer the
+      // model still records as armed, and _dispatchChannel may drain an
+      // availability event before the fired event is even queued.
       unawaited(
         _dispatchChannel(
           ChannelModelEvent.channelRejoinTimerFired(timerId: timerId),
