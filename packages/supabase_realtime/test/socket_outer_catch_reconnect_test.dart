@@ -19,6 +19,8 @@
 // touch `socket_test.dart` — precedent: `b8085ff Revert union-merge
 // attempt; move conflicting test to its own file instead`.
 
+import 'dart:async';
+
 import 'package:supabase_realtime/supabase_realtime.dart';
 import 'package:test/test.dart';
 
@@ -82,17 +84,20 @@ void main() {
     );
 
     test(
-      'respects a disconnecting connState and does not schedule a retry',
+      'a user disconnect racing the throw does not schedule a retry',
       () async {
-        // The inner `await localConn.ready` catch guards against fighting a
-        // concurrent user-initiated disconnect by checking
-        // `connState != disconnected && connState != disconnecting`. The
-        // outer catch needs the same guard. Prove it by flipping connState
-        // to `disconnecting` *inside* transport() (simulating: user tapped
-        // sign-out just as the resume-triggered connect attempt was
-        // starting, landing after connect()'s `connState = connecting`
-        // line but before the throw propagates to the outer catch) and
-        // confirming that no retries fire.
+        // The field scenario: the user taps sign-out just as a resume-
+        // triggered connect attempt is starting, so the disconnect lands
+        // between the connect commit and the transport throw.
+        //
+        // This used to be simulated by assigning `connectionState =
+        // disconnecting` from inside transport(), because the shell had no
+        // other way to express it. That made a derived, deprecated view
+        // authoritative over lifecycle intent. The race is now expressed
+        // directly: a real disconnect() issued at exactly that moment. Its
+        // event is queued behind the in-flight batch and processed ahead of
+        // the transport failure, so intent is already down when the failure
+        // is handled and no retry may be armed (ADR-013 S1).
         var transportCallCount = 0;
         final socketHolder = <RealtimeClient>[];
         final socket = RealtimeClient(
@@ -100,7 +105,7 @@ void main() {
           reconnectAfter: (_) => const Duration(milliseconds: 20),
           transport: (_, _) {
             transportCallCount++;
-            socketHolder.single.connectionState = SocketState.disconnecting;
+            unawaited(socketHolder.single.disconnect());
             throw StateError('synchronous transport failure');
           },
         );
@@ -115,10 +120,10 @@ void main() {
           transportCallCount,
           1,
           reason:
-              'When connState is disconnecting at the time of the throw, '
-              'the outer catch must not schedule a retry — that would '
-              "fight the user's disconnect intent.",
+              'A user disconnect that races the transport throw must win: '
+              'arming a retry here would fight the disconnect intent.',
         );
+        expect(socket.connectionState, SocketState.disconnected);
       },
     );
   });

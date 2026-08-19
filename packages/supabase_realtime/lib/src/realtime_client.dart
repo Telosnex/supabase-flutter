@@ -62,6 +62,14 @@ final class _CloseRequest {
   final String? reason;
 }
 
+/// A user-facing call waiting for the socket model to reach a settled state.
+final class _SettleWaiter {
+  _SettleWaiter(this.predicate);
+
+  final bool Function(SocketModelState) predicate;
+  final completer = Completer<void>();
+}
+
 /// The lifecycle status of a heartbeat reported to
 /// [RealtimeClient.onHeartbeat].
 enum RealtimeHeartbeatStatus {
@@ -338,6 +346,7 @@ class RealtimeClient {
   @internal
   Future<void> connect() async {
     await _socketDriver.dispatch(SocketModelEvent.connectRequested());
+    await _awaitSettled((state) => state.phase != SocketPhase.connecting);
   }
 
   /// Disconnects the socket with status [code] and [reason] for the disconnect
@@ -349,6 +358,10 @@ class RealtimeClient {
     await _socketDriver.dispatch(
       SocketModelEvent.disconnectRequested(),
       metadata: _CloseRequest(code: code, reason: reason),
+    );
+    await _awaitSettled(
+      (state) =>
+          state.intent == SocketIntent.down && state.phase == SocketPhase.idle,
     );
     if (legacyConnection != null &&
         legacyState == SocketState.open &&
@@ -585,6 +598,30 @@ class RealtimeClient {
     return ref.toString();
   }
 
+  final _settleWaiters = <_SettleWaiter>[];
+
+  /// Completes once the model reaches a state satisfying [predicate].
+  ///
+  /// User-facing calls such as [connect] and [disconnect] must not return
+  /// until the lifecycle has settled, but effects are non-blocking so the
+  /// event queue is never held open across I/O. Waiting on model state rather
+  /// than on an effect keeps both properties.
+  Future<void> _awaitSettled(bool Function(SocketModelState) predicate) {
+    if (predicate(_socketDriver.state)) return Future<void>.value();
+    final waiter = _SettleWaiter(predicate);
+    _settleWaiters.add(waiter);
+    return waiter.completer.future;
+  }
+
+  void _resolveSettleWaiters(SocketModelState state) {
+    if (_settleWaiters.isEmpty) return;
+    _settleWaiters.removeWhere((waiter) {
+      if (!waiter.predicate(state)) return false;
+      waiter.completer.complete();
+      return true;
+    });
+  }
+
   void _onSocketTrace(Map<String, Object?> trace) {
     final sequence = trace['sequence']! as int;
     assert(sequence == _formalTraceSequence + 1);
@@ -602,6 +639,7 @@ class RealtimeClient {
       _kernelPendingHeartbeatGeneration = null;
       _kernelPendingHeartbeatRef = null;
     }
+    _resolveSettleWaiters(state);
     _log.finest('formal.socket ${jsonEncode(trace)}');
     logger?.call('formal', 'socket_transition', trace);
   }
@@ -639,15 +677,15 @@ class RealtimeClient {
             _terminalGenerationsReported.contains(state.activeGeneration));
   }
 
-  Future<void> _executeSocketEffect(
+  void _executeSocketEffect(
     SocketModelEffect effect,
     SocketEffectContext context,
-  ) async {
+  ) {
     switch (effect.kind) {
       case SocketEffectKind.openTransport:
-        await _openTransport(effect.generation!);
+        _openTransport(effect.generation!);
       case SocketEffectKind.closeTransport:
-        await _closeTransport(
+        _closeTransport(
           effect.generation!,
           effect.closeReason!,
           context.metadata,
@@ -667,7 +705,7 @@ class RealtimeClient {
       case SocketEffectKind.sendHeartbeat:
         _sendKernelHeartbeat(effect.generation!, effect.ref!);
       case SocketEffectKind.resolveCurrentToken:
-        await setAccessToken(null);
+        unawaited(setAccessToken(null));
       case SocketEffectKind.emitConnectionOpen:
         _onConnectionOpen();
       case SocketEffectKind.emitConnectionClosed:
@@ -686,34 +724,21 @@ class RealtimeClient {
     }
   }
 
-  Future<void> _openTransport(int generation) async {
-    // The model committed this OpenTransport obligation, but effects run after
-    // the commit and other events may have been processed in between. If the
-    // model no longer owns this attempt, opening a transport here would create
-    // a resource the model does not know about and nothing would ever close it
-    // (ADR-013 S1: no transport opens while intent is down).
-    if (_socketDriver.state.activeGeneration != generation) {
-      log('transport', 'open superseded before connect', null, Level.FINE);
-      return;
-    }
+  /// Starts a transport attempt. Non-blocking: the handshake outcome is posted
+  /// back as a later event.
+  ///
+  /// `transport()` is called inside the committed effect batch, so the handle
+  /// is registered while the model still owns [generation]. Any later
+  /// CloseTransport for that generation therefore finds a handle to close,
+  /// which is what keeps ADR-013 S1 true without an await-window guard.
+  void _openTransport(int generation) {
     log('transport', 'connecting to $endpointUrl', null);
     log('transport', 'connecting', null, Level.FINE);
     final WebSocketChannel localConnection;
     try {
       localConnection = transport(endpointUrl, headers);
     } catch (error) {
-      if (connectionState == SocketState.disconnecting) {
-        await _socketDriver.dispatch(
-          SocketModelEvent.transportOpenFailed(
-            generation: generation,
-            failureKind: FailureKind.syncValue,
-          ),
-          cause: error,
-        );
-        await _socketDriver.dispatch(SocketModelEvent.disconnectRequested());
-        return;
-      }
-      await _socketDriver.dispatch(
+      _socketDriver.post(
         SocketModelEvent.transportOpenFailed(
           generation: generation,
           failureKind: FailureKind.syncValue,
@@ -725,12 +750,22 @@ class RealtimeClient {
     connection = localConnection;
     _connectionsByGeneration[generation] = localConnection;
     _terminalGenerationsReported.remove(generation);
+    // Deferred to a microtask so the effect batch stays atomic. Started
+    // inline, this continuation could tear the handle back down (an unstubbed
+    // or immediately-failing transport) before the compensating event is
+    // posted, leaving the model claiming a generation the shell no longer has.
+    scheduleMicrotask(() => _awaitTransportReady(generation, localConnection));
+  }
 
+  Future<void> _awaitTransportReady(
+    int generation,
+    WebSocketChannel localConnection,
+  ) async {
     try {
       await localConnection.ready;
     } catch (error) {
       await _disposeGeneration(generation);
-      await _socketDriver.dispatch(
+      _socketDriver.post(
         SocketModelEvent.transportOpenFailed(
           generation: generation,
           failureKind: FailureKind.asyncValue,
@@ -745,14 +780,12 @@ class RealtimeClient {
         final subscription = localConnection.stream.listen(
           (message) => onConnectionMessage(message as Object),
           onError: (Object error, StackTrace stackTrace) {
-            unawaited(
-              _socketDriver.dispatch(
-                SocketModelEvent.transportErrorObserved(
-                  generation: generation,
-                  failureKind: FailureKind.stream,
-                ),
-                cause: error,
+            _socketDriver.post(
+              SocketModelEvent.transportErrorObserved(
+                generation: generation,
+                failureKind: FailureKind.stream,
               ),
+              cause: error,
             );
           },
           onDone: () {
@@ -766,7 +799,7 @@ class RealtimeClient {
         // A production WebSocketChannel always exposes a stream.
       }
     }
-    await _socketDriver.dispatch(
+    _socketDriver.post(
       SocketModelEvent.transportOpened(generation: generation),
     );
   }
@@ -792,25 +825,23 @@ class RealtimeClient {
   }) async {
     final generation = event.generation!;
     if (!_terminalGenerationsReported.add(generation)) return;
-    await _socketDriver.dispatch(
-      event,
-      cause: cause,
-      metadata: metadata,
-    );
+    _socketDriver.post(event, cause: cause, metadata: metadata);
     await _disposeGeneration(generation);
   }
 
-  Future<void> _closeTransport(
+  /// Starts closing a transport. Non-blocking: the close outcome is posted
+  /// back as a later event.
+  void _closeTransport(
     int generation,
     CloseReason closeReason,
     Object? metadata,
-  ) async {
+  ) {
     final localConnection = _connectionsByGeneration[generation];
     if (localConnection == null) {
       final error = StateError(
         'Generation $generation has no transport handle to close',
       );
-      await _socketDriver.dispatch(
+      _socketDriver.post(
         SocketModelEvent.transportCloseFailed(
           generation: generation,
           failureKind: FailureKind.asyncValue,
@@ -825,6 +856,22 @@ class RealtimeClient {
       'reason': request?.reason,
       'closeReason': closeReason.wireName,
     }, Level.FINE);
+    scheduleMicrotask(
+      () => _awaitTransportClosed(
+        generation,
+        localConnection,
+        closeReason,
+        request,
+      ),
+    );
+  }
+
+  Future<void> _awaitTransportClosed(
+    int generation,
+    WebSocketChannel localConnection,
+    CloseReason closeReason,
+    _CloseRequest? request,
+  ) async {
     try {
       final Future<void> closing;
       if (request?.code != null) {

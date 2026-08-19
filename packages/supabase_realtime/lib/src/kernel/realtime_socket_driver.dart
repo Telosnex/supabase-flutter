@@ -5,11 +5,15 @@ import 'generated/model_hash.dart';
 import 'generated/model_schema.dart';
 import 'realtime_socket_kernel.dart';
 
+/// Executes a single committed effect.
+///
+/// Executors must not block: they may start asynchronous work, but they must
+/// return without awaiting it and post the outcome back as a new event (see
+/// [RealtimeSocketDriver.post]). Holding an effect open across an await would
+/// stall the whole event queue, because the queue does not advance until the
+/// current batch completes.
 typedef SocketEffectExecutor =
-    FutureOr<void> Function(
-      SocketModelEffect effect,
-      SocketEffectContext context,
-    );
+    void Function(SocketModelEffect effect, SocketEffectContext context);
 typedef SocketTraceSink = void Function(Map<String, Object?> trace);
 typedef SocketRepresentationValidator = bool Function(SocketModelState state);
 
@@ -44,9 +48,21 @@ final class RealtimeSocketDriver {
   SocketModelState _state = RealtimeSocketKernel.initialState;
   var _sequence = 0;
   var _draining = false;
-  var _activeEffectBatches = 0;
 
   SocketModelState get state => _state;
+
+  /// Posts an event without waiting for it to be processed.
+  ///
+  /// This is how effects report asynchronous outcomes. An effect must never
+  /// await [dispatch] on its own follow-up event: the queue does not advance
+  /// until the current batch completes, so awaiting would deadlock.
+  ///
+  /// Errors are intentionally not swallowed. A failed post means either a
+  /// contract-invalid event or a throwing effect, both of which are defects
+  /// that should surface rather than be silently dropped.
+  void post(SocketModelEvent event, {Object? cause, Object? metadata}) {
+    unawaited(dispatch(event, cause: cause, metadata: metadata));
+  }
 
   Future<SocketTransitionResult> dispatch(
     SocketModelEvent event, {
@@ -95,37 +111,39 @@ final class RealtimeSocketDriver {
           'postState': result.postState.toJson(),
           'effects': result.effects.map((effect) => effect.toJson()).toList(),
         });
-        unawaited(_runEffects(request, result));
+        _runEffects(request, result);
       }
+      // Checked at quiescence rather than per batch. An effect may post a
+      // follow-up event (a synchronous transport failure, say), so mid-cascade
+      // states are legitimately transient; only the settled state is required
+      // to match the model's obligations.
+      assert(
+        _validateRepresentation?.call(_state) ?? true,
+        'Socket shell resources do not match model obligations',
+      );
     } finally {
       _draining = false;
     }
   }
 
-  Future<void> _runEffects(
-    _SocketRequest request,
-    SocketTransitionResult result,
-  ) async {
-    _activeEffectBatches++;
+  /// Runs one committed effect batch to completion.
+  ///
+  /// Batches are synchronous and atomic with respect to the event queue: no
+  /// event can be observed between the state commit and the last effect of the
+  /// batch it produced. Effects that need to report an asynchronous outcome
+  /// [post] a new event instead of awaiting one.
+  void _runEffects(_SocketRequest request, SocketTransitionResult result) {
+    final context = SocketEffectContext(
+      cause: request.cause,
+      metadata: request.metadata,
+    );
     try {
-      final context = SocketEffectContext(
-        cause: request.cause,
-        metadata: request.metadata,
-      );
       for (final effect in result.effects) {
-        await _executeEffect(effect, context);
+        _executeEffect(effect, context);
       }
       request.completer.complete(result);
     } catch (error, stackTrace) {
       request.completer.completeError(error, stackTrace);
-    } finally {
-      _activeEffectBatches--;
-      if (_activeEffectBatches == 0) {
-        assert(
-          _validateRepresentation?.call(_state) ?? true,
-          'Socket shell resources do not match model obligations',
-        );
-      }
     }
   }
 }

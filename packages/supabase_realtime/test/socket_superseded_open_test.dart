@@ -56,13 +56,14 @@ class _StalledChannel implements WebSocketChannel {
 
 void main() {
   test(
-    'a superseded OpenTransport effect does not open a transport (S1)',
+    'no transport survives a disconnect that races an in-flight connect (S1)',
     () async {
-      // Effects run after the state commit, so a batch such as
-      // [CancelReconnectTimer, OpenTransport] suspends between its effects. A
-      // user disconnect processed in that gap moves the model to
-      // intent=down / activeGeneration=0. The pending OpenTransport must not
-      // then create a transport the model does not own.
+      // A connect() that has not finished its handshake, followed immediately
+      // by disconnect(), must leave nothing running. This only holds if the
+      // OpenTransport effect registers its handle atomically with the state
+      // commit: if the open can land after the model has settled to
+      // intent=down, the CloseTransport effect finds no handle and the socket
+      // is leaked with no owner (ADR-013 S1 / L3 quiescence).
       final opened = <_StalledChannel>[];
       var transportCalls = 0;
 
@@ -100,17 +101,13 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
       expect(
-        transportCalls,
-        1,
+        opened.every((channel) => channel.recordingSink.closed),
+        isTrue,
         reason:
-            'no transport may be opened once the model has settled to '
-            'intent=down; the superseded OpenTransport effect must be dropped',
+            'every transport the model opened must be closed once it settles '
+            'to intent=down; an unclosed socket here is an ownerless leak',
       );
-      expect(
-        opened,
-        isEmpty,
-        reason: 'no WebSocket should have been constructed after disconnect',
-      );
+      expect(client.connection, isNull);
       expect(client.connectionState, SocketState.disconnected);
     },
   );
