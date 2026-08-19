@@ -8,6 +8,8 @@ import 'package:logging/logging.dart';
 import 'package:meta/meta.dart';
 import 'package:supabase_realtime/supabase_realtime.dart';
 import 'package:supabase_realtime/src/constants.dart';
+import 'package:supabase_realtime/src/kernel/generated/model_schema.dart';
+import 'package:supabase_realtime/src/kernel/realtime_socket_driver.dart';
 import 'package:supabase_realtime/src/message.dart';
 import 'package:supabase_realtime/src/retry_timer.dart';
 import 'package:supabase_realtime/src/serializer.dart';
@@ -51,6 +53,13 @@ class RealtimeCloseEvent {
   String toString() {
     return 'RealtimeCloseEvent(code: $code, reason: $reason)';
   }
+}
+
+final class _CloseRequest {
+  const _CloseRequest({required this.code, required this.reason});
+
+  final int? code;
+  final String? reason;
 }
 
 /// The lifecycle status of a heartbeat reported to
@@ -143,6 +152,12 @@ class RealtimeClient {
   Duration heartbeatInterval = RealtimeConstants.defaultHeartbeatInterval;
   @internal
   Timer? heartbeatTimer;
+  Timer? _kernelReconnectTimer;
+  int? _kernelReconnectTimerId;
+  int? _kernelHeartbeatTimerId;
+  int? _kernelDisconnectTimerId;
+  int? _kernelPendingHeartbeatGeneration;
+  int? _kernelPendingHeartbeatRef;
 
   /// Delay before the socket is disconnected once the last channel has been
   /// removed. [Duration.zero] disconnects immediately. Defaults to twice the
@@ -175,6 +190,12 @@ class RealtimeClient {
   late TimerCalculation reconnectAfter;
   WebSocketChannel? connection;
   StreamSubscription<dynamic>? _connectionSubscription;
+  final Map<int, WebSocketChannel> _connectionsByGeneration = {};
+  final Map<int, StreamSubscription<dynamic>> _subscriptionsByGeneration = {};
+  final Set<int> _terminalGenerationsReported = {};
+  late final RealtimeSocketDriver _socketDriver;
+  var _formalTraceSequence = 0;
+  var _preserveLegacyClosedState = false;
   @internal
   List<dynamic> sendBuffer = [];
 
@@ -187,6 +208,12 @@ class RealtimeClient {
 
   /// The current state of the socket, or `null` before the first [connect].
   SocketState? connectionState;
+  @internal
+  void emitFormalTrace(Map<String, Object?> trace) {
+    _log.finest('formal.lifecycle ${jsonEncode(trace)}');
+    logger?.call('formal', 'lifecycle_transition', trace);
+  }
+
   Future<String?> Function()? customAccessToken;
 
   /// Initializes the Socket
@@ -274,6 +301,11 @@ class RealtimeClient {
            (version == RealtimeProtocolVersion.v1
                ? _decodeLegacy
                : _serializer.decode) {
+    _socketDriver = RealtimeSocketDriver(
+      executeEffect: _executeSocketEffect,
+      traceSink: _onSocketTrace,
+      validateRepresentation: _socketRepresentationMatches,
+    );
     _log.config(
       'Initialize RealtimeClient with endpoint: $endpoint, timeout: $timeout, '
       'heartbeatInterval: $heartbeatInterval, '
@@ -288,7 +320,16 @@ class RealtimeClient {
 
     this.reconnectAfter = reconnectAfter ?? RetryTimer.createRetryFunction();
     reconnectTimer = RetryTimer(
-      () => unawaited(_reconnect()),
+      () {
+        final timerId = _kernelReconnectTimerId;
+        if (timerId != null) {
+          unawaited(
+            _socketDriver.dispatch(
+              SocketModelEvent.reconnectTimerFired(timerId: timerId),
+            ),
+          );
+        }
+      },
       this.reconnectAfter,
     );
   }
@@ -296,136 +337,35 @@ class RealtimeClient {
   /// Connects the socket.
   @internal
   Future<void> connect() async {
-    if (connection != null) {
-      if (connectionState != SocketState.closed) {
-        return;
-      }
-      await disconnect();
-    }
-
-    try {
-      log('transport', 'connecting to $endpointUrl', null);
-      log('transport', 'connecting', null, Level.FINE);
-      connectionState = SocketState.connecting;
-      final WebSocketChannel localConnection = transport(endpointUrl, headers);
-      connection = localConnection;
-
-      try {
-        await localConnection.ready;
-      } catch (error) {
-        // Bail out if disconnect() ran or a new connect() started during await
-        if (connection != localConnection) {
-          return;
-        }
-        // Don't schedule a reconnect and emit error if connection has been
-        // closed by the user or [disconnect] waits for the connection to be
-        // ready before closing it.
-        if (connectionState != SocketState.disconnected &&
-            connectionState != SocketState.disconnecting) {
-          connectionState = SocketState.closed;
-          _onConnectionError(error);
-          reconnectTimer.scheduleTimeout();
-        }
-        return;
-      }
-
-      // Guard: bail out if disconnect() ran during the await
-      if (connection != localConnection ||
-          connectionState != SocketState.connecting) {
-        return;
-      }
-
-      connectionState = SocketState.open;
-
-      _onConnectionOpen();
-      _connectionSubscription = localConnection.stream.listen(
-        (message) => onConnectionMessage(message),
-        onError: _onConnectionError,
-        onDone: () {
-          // communication has been closed
-          if (connectionState != SocketState.disconnected &&
-              connectionState != SocketState.disconnecting) {
-            connectionState = SocketState.closed;
-          }
-          _onConnectionClose();
-        },
-      );
-    } catch (error) {
-      /// General error handling
-      _onConnectionError(error);
-    }
-  }
-
-  Future<void> _reconnect() async {
-    await disconnect();
-    await connect();
+    await _socketDriver.dispatch(SocketModelEvent.connectRequested());
   }
 
   /// Disconnects the socket with status [code] and [reason] for the disconnect
   Future<void> disconnect({int? code, String? reason}) async {
-    _cancelPendingDisconnect();
-    final connection = this.connection;
-    if (connection != null) {
-      final oldState = connectionState;
-      final shouldCloseSink =
-          oldState == SocketState.open || oldState == SocketState.connecting;
-      if (shouldCloseSink) {
-        // Don't set the state to `disconnecting` if the connection is already
-        // closed.
-        connectionState = SocketState.disconnecting;
-        log('transport', 'disconnecting', {
-          'code': code,
-          'reason': reason,
-        }, Level.FINE);
+    final legacyState = connectionState;
+    final legacyConnection = connection;
+    final legacyOnlyConnection = _connectionsByGeneration.isEmpty;
+    _preserveLegacyClosedState = legacyState == SocketState.closed;
+    await _socketDriver.dispatch(
+      SocketModelEvent.disconnectRequested(),
+      metadata: _CloseRequest(code: code, reason: reason),
+    );
+    if (legacyConnection != null &&
+        legacyState == SocketState.open &&
+        legacyOnlyConnection) {
+      if (code != null) {
+        await legacyConnection.sink.close(code, reason ?? '');
+      } else {
+        await legacyConnection.sink.close();
       }
-
-      if (shouldCloseSink) {
-        onTimeout() {
-          log(
-            'transport',
-            'timeout while closing connection',
-            null,
-            Level.FINE,
-          );
-          // Handle as the connection would have been closed successfully, to
-          // avoid hanging the client. This is done by mimicking the onDone
-          // callback of the connection stream. By canceling the subscription,
-          // we avoid calling the onDone too.
-          connectionState = SocketState.disconnected;
-          _onConnectionClose();
-        }
-
-        if (code != null) {
-          // Add a timeout to close the sink to avoid hanging in case something
-          // is wrong with the connection. The Dart SDK has a timeout of 5
-          // seconds for closing the IO WebSocket connection, so we set a
-          // timeout of 6 seconds here to avoid hanging indefinitely.
-          await connection.sink
-              .close(code, reason ?? '')
-              .timeout(connectionCloseTimeout, onTimeout: onTimeout);
-        } else {
-          await connection.sink.close().timeout(
-            connectionCloseTimeout,
-            onTimeout: onTimeout,
-          );
-        }
-        connectionState = SocketState.disconnected;
-        log('transport', 'disconnected', null, Level.FINE);
-      }
-
-      // Cancel any reconnect scheduled by `_onConnectionClose`. When the socket
-      // has already dropped (`connectionState == closed`) the block above is
-      // skipped, so without this an armed backoff timer would fire after the
-      // user explicitly disconnected and silently reopen the connection.
-      reconnectTimer.cancel();
-
-      this.connection = null;
-      await _connectionSubscription?.cancel();
-      _connectionSubscription = null;
-
-      // remove open handles
-      if (heartbeatTimer != null) heartbeatTimer?.cancel();
     }
+    await _disposeAllTransports();
+    connection = null;
+    if (legacyState == SocketState.closed) {
+      connectionState = SocketState.closed;
+    }
+    _preserveLegacyClosedState = false;
+    log('transport', 'disconnected', null, Level.FINE);
   }
 
   List<RealtimeChannel> getChannels() {
@@ -518,39 +458,22 @@ class RealtimeClient {
   /// disconnects immediately, otherwise the disconnect is deferred so that a
   /// channel created within the delay can reuse the open socket.
   void _schedulePendingDisconnect() {
-    _cancelPendingDisconnect();
-    if (disconnectOnEmptyChannelsAfter == Duration.zero) {
-      log('transport', 'disconnecting immediately - no channels');
-      unawaited(disconnect());
-      return;
-    }
-    _pendingDisconnectTimer = Timer(
-      disconnectOnEmptyChannelsAfter,
-      () {
-        _pendingDisconnectTimer = null;
-        if (channels.isEmpty) {
-          log(
-            'transport',
-            'deferred disconnect fired - no channels, disconnecting',
-          );
-          unawaited(disconnect());
-        }
-      },
-    );
-    log(
-      'transport',
-      'deferred disconnect scheduled in '
-          '${disconnectOnEmptyChannelsAfter.inMilliseconds}ms',
+    unawaited(
+      _socketDriver.dispatch(
+        SocketModelEvent.channelDemandDisappeared(
+          grace: disconnectOnEmptyChannelsAfter == Duration.zero
+              ? GraceKind.zero
+              : GraceKind.nonzero,
+        ),
+      ),
     );
   }
 
   /// Cancels a scheduled disconnect when channel activity is detected.
   void _cancelPendingDisconnect() {
-    if (_pendingDisconnectTimer != null) {
-      log('transport', 'pending disconnect cancelled - channel activity');
-      _pendingDisconnectTimer!.cancel();
-      _pendingDisconnectTimer = null;
-    }
+    unawaited(
+      _socketDriver.dispatch(SocketModelEvent.channelDemandAppeared()),
+    );
   }
 
   /// Push out a message if the socket is connected.
@@ -590,13 +513,32 @@ class RealtimeClient {
     final payload = message['payload'];
     final messageRef = message['ref'] as String?;
     if (messageRef != null && messageRef == pendingHeartbeatRef) {
-      pendingHeartbeatRef = null;
       final heartbeatStatus = payload is Map ? payload['status'] : null;
-      _heartbeatController.add(
-        heartbeatStatus == 'ok'
-            ? RealtimeHeartbeatStatus.ok
-            : RealtimeHeartbeatStatus.error,
-      );
+      final parsedRef = int.tryParse(messageRef);
+      if (parsedRef != null &&
+          _kernelPendingHeartbeatGeneration != null &&
+          _kernelPendingHeartbeatRef == parsedRef) {
+        unawaited(
+          _socketDriver.dispatch(
+            SocketModelEvent.heartbeatReplyReceived(
+              generation: _kernelPendingHeartbeatGeneration!,
+              ref: parsedRef,
+              heartbeatStatus: heartbeatStatus == 'ok'
+                  ? HeartbeatStatus.ok
+                  : HeartbeatStatus.error,
+            ),
+          ),
+        );
+      } else {
+        // Compatibility for callers that historically assigned the public
+        // pendingHeartbeatRef test seam directly.
+        pendingHeartbeatRef = null;
+        _heartbeatController.add(
+          heartbeatStatus == 'ok'
+              ? RealtimeHeartbeatStatus.ok
+              : RealtimeHeartbeatStatus.error,
+        );
+      }
     }
 
     final status = payload is Map ? (payload['status'] ?? '') : '';
@@ -643,6 +585,433 @@ class RealtimeClient {
     return ref.toString();
   }
 
+  void _onSocketTrace(Map<String, Object?> trace) {
+    final sequence = trace['sequence']! as int;
+    assert(sequence == _formalTraceSequence + 1);
+    _formalTraceSequence = sequence;
+    final state = SocketModelState.fromJson(
+      (trace['postState']! as Map).cast<String, Object?>(),
+    );
+    if (!_preserveLegacyClosedState) {
+      connectionState = _publicConnectionState(state);
+    }
+    pendingHeartbeatRef = state.pendingHeartbeat.active
+        ? state.pendingHeartbeat.ref.toString()
+        : null;
+    if (!state.pendingHeartbeat.active) {
+      _kernelPendingHeartbeatGeneration = null;
+      _kernelPendingHeartbeatRef = null;
+    }
+    _log.finest('formal.socket ${jsonEncode(trace)}');
+    logger?.call('formal', 'socket_transition', trace);
+  }
+
+  SocketState? _publicConnectionState(SocketModelState state) {
+    if (!state.started) return null;
+    return switch (state.phase) {
+      SocketPhase.connecting => SocketState.connecting,
+      SocketPhase.open => SocketState.open,
+      SocketPhase.closing when state.closeKind == CloseKind.user =>
+        SocketState.disconnecting,
+      SocketPhase.closing => SocketState.open,
+      SocketPhase.idle when state.intent == SocketIntent.up =>
+        SocketState.closed,
+      SocketPhase.idle => SocketState.disconnected,
+    };
+  }
+
+  bool _socketRepresentationMatches(SocketModelState state) {
+    final ownsTransport = state.activeGeneration > 0;
+    return (!state.reconnectTimer.armed ||
+            state.reconnectTimer.id == _kernelReconnectTimerId) &&
+        (!state.heartbeatTimer.armed ||
+            state.heartbeatTimer.id == _kernelHeartbeatTimerId) &&
+        (!state.disconnectTimer.armed ||
+            state.disconnectTimer.id == _kernelDisconnectTimerId) &&
+        (!state.pendingHeartbeat.active ||
+            _kernelPendingHeartbeatRef != null) &&
+        (!state.pendingHeartbeat.active ||
+            (state.pendingHeartbeat.ref == _kernelPendingHeartbeatRef &&
+                state.pendingHeartbeat.generation ==
+                    _kernelPendingHeartbeatGeneration)) &&
+        (!ownsTransport ||
+            _connectionsByGeneration.containsKey(state.activeGeneration) ||
+            _terminalGenerationsReported.contains(state.activeGeneration));
+  }
+
+  Future<void> _executeSocketEffect(
+    SocketModelEffect effect,
+    SocketEffectContext context,
+  ) async {
+    switch (effect.kind) {
+      case SocketEffectKind.openTransport:
+        await _openTransport(effect.generation!);
+      case SocketEffectKind.closeTransport:
+        await _closeTransport(
+          effect.generation!,
+          effect.closeReason!,
+          context.metadata,
+        );
+      case SocketEffectKind.armReconnectTimer:
+        _armReconnectTimer(effect.timerId!, effect.delayOrdinal!);
+      case SocketEffectKind.cancelReconnectTimer:
+        _cancelReconnectTimer(effect.timerId!);
+      case SocketEffectKind.armHeartbeatTimer:
+        _armHeartbeatTimer(effect.timerId!);
+      case SocketEffectKind.cancelHeartbeatTimer:
+        _cancelHeartbeatTimer(effect.timerId!);
+      case SocketEffectKind.armDisconnectTimer:
+        _armDisconnectTimer(effect.timerId!);
+      case SocketEffectKind.cancelDisconnectTimer:
+        _cancelDisconnectTimer(effect.timerId!);
+      case SocketEffectKind.sendHeartbeat:
+        _sendKernelHeartbeat(effect.generation!, effect.ref!);
+      case SocketEffectKind.resolveCurrentToken:
+        await setAccessToken(null);
+      case SocketEffectKind.emitConnectionOpen:
+        _onConnectionOpen();
+      case SocketEffectKind.emitConnectionClosed:
+        _onConnectionClose(context.metadata as RealtimeCloseEvent?);
+      case SocketEffectKind.emitConnectionError:
+        _onConnectionError(
+          context.cause ??
+              StateError(
+                'Realtime transport ${effect.failureKind!.wireName} failure',
+              ),
+        );
+      case SocketEffectKind.emitHeartbeat:
+        _emitHeartbeat(effect.heartbeatStatus!);
+      case SocketEffectKind.notifyChannelsOfTransportError:
+        _triggerChanError(context.cause ?? context.metadata);
+    }
+  }
+
+  Future<void> _openTransport(int generation) async {
+    log('transport', 'connecting to $endpointUrl', null);
+    log('transport', 'connecting', null, Level.FINE);
+    final WebSocketChannel localConnection;
+    try {
+      localConnection = transport(endpointUrl, headers);
+    } catch (error) {
+      if (connectionState == SocketState.disconnecting) {
+        await _socketDriver.dispatch(
+          SocketModelEvent.transportOpenFailed(
+            generation: generation,
+            failureKind: FailureKind.syncValue,
+          ),
+          cause: error,
+        );
+        await _socketDriver.dispatch(SocketModelEvent.disconnectRequested());
+        return;
+      }
+      await _socketDriver.dispatch(
+        SocketModelEvent.transportOpenFailed(
+          generation: generation,
+          failureKind: FailureKind.syncValue,
+        ),
+        cause: error,
+      );
+      return;
+    }
+    connection = localConnection;
+    _connectionsByGeneration[generation] = localConnection;
+    _terminalGenerationsReported.remove(generation);
+
+    try {
+      await localConnection.ready;
+    } catch (error) {
+      await _disposeGeneration(generation);
+      await _socketDriver.dispatch(
+        SocketModelEvent.transportOpenFailed(
+          generation: generation,
+          failureKind: FailureKind.asyncValue,
+        ),
+        cause: error,
+      );
+      return;
+    }
+
+    if (identical(_connectionsByGeneration[generation], localConnection)) {
+      try {
+        final subscription = localConnection.stream.listen(
+          (message) => onConnectionMessage(message as Object),
+          onError: (Object error, StackTrace stackTrace) {
+            unawaited(
+              _socketDriver.dispatch(
+                SocketModelEvent.transportErrorObserved(
+                  generation: generation,
+                  failureKind: FailureKind.stream,
+                ),
+                cause: error,
+              ),
+            );
+          },
+          onDone: () {
+            unawaited(_transportDone(generation, localConnection));
+          },
+        );
+        _subscriptionsByGeneration[generation] = subscription;
+        _connectionSubscription = subscription;
+      } on TypeError {
+        // Some existing injected test transports only implement ready/sink.
+        // A production WebSocketChannel always exposes a stream.
+      }
+    }
+    await _socketDriver.dispatch(
+      SocketModelEvent.transportOpened(generation: generation),
+    );
+  }
+
+  Future<void> _transportDone(
+    int generation,
+    WebSocketChannel localConnection,
+  ) async {
+    final closeEvent = _closeEvent(localConnection);
+    await _reportTransportTerminated(
+      SocketModelEvent.transportClosed(
+        generation: generation,
+        failureKind: FailureKind.server,
+      ),
+      metadata: closeEvent,
+    );
+  }
+
+  Future<void> _reportTransportTerminated(
+    SocketModelEvent event, {
+    Object? cause,
+    Object? metadata,
+  }) async {
+    final generation = event.generation!;
+    if (!_terminalGenerationsReported.add(generation)) return;
+    await _socketDriver.dispatch(
+      event,
+      cause: cause,
+      metadata: metadata,
+    );
+    await _disposeGeneration(generation);
+  }
+
+  Future<void> _closeTransport(
+    int generation,
+    CloseReason closeReason,
+    Object? metadata,
+  ) async {
+    final localConnection = _connectionsByGeneration[generation];
+    if (localConnection == null) {
+      final error = StateError(
+        'Generation $generation has no transport handle to close',
+      );
+      await _socketDriver.dispatch(
+        SocketModelEvent.transportCloseFailed(
+          generation: generation,
+          failureKind: FailureKind.asyncValue,
+        ),
+        cause: error,
+      );
+      return;
+    }
+    final request = metadata is _CloseRequest ? metadata : null;
+    log('transport', 'disconnecting', {
+      'code': request?.code,
+      'reason': request?.reason,
+      'closeReason': closeReason.wireName,
+    }, Level.FINE);
+    try {
+      final Future<void> closing;
+      if (request?.code != null) {
+        closing = localConnection.sink.close(
+          request!.code,
+          request.reason ?? '',
+        );
+      } else if (closeReason == CloseReason.heartbeatTimeout) {
+        closing = localConnection.sink.close(
+          RealtimeConstants.webSocketCloseNormal,
+          'heartbeat timeout',
+        );
+      } else {
+        closing = localConnection.sink.close();
+      }
+      await closing.timeout(connectionCloseTimeout);
+      final closeEvent = _closeEvent(localConnection);
+      await _reportTransportTerminated(
+        SocketModelEvent.transportClosed(
+          generation: generation,
+          failureKind: FailureKind.requested,
+        ),
+        metadata: closeEvent,
+      );
+    } on TimeoutException catch (error) {
+      await _reportTransportTerminated(
+        SocketModelEvent.transportClosed(
+          generation: generation,
+          failureKind: FailureKind.timeout,
+        ),
+        cause: error,
+      );
+    } catch (error) {
+      await _reportTransportTerminated(
+        SocketModelEvent.transportCloseFailed(
+          generation: generation,
+          failureKind: FailureKind.asyncValue,
+        ),
+        cause: error,
+      );
+    }
+  }
+
+  RealtimeCloseEvent? _closeEvent(WebSocketChannel localConnection) {
+    final statusCode = localConnection.closeCode;
+    return statusCode == null
+        ? null
+        : RealtimeCloseEvent(
+            code: statusCode,
+            reason: localConnection.closeReason,
+          );
+  }
+
+  Future<void> _disposeGeneration(int generation) async {
+    _connectionsByGeneration.remove(generation);
+    final subscription = _subscriptionsByGeneration.remove(generation);
+    if (identical(subscription, _connectionSubscription)) {
+      _connectionSubscription = null;
+    }
+    if (subscription != null) unawaited(subscription.cancel());
+  }
+
+  Future<void> _disposeAllTransports() async {
+    _connectionsByGeneration.clear();
+    final subscriptions = _subscriptionsByGeneration.values.toList();
+    _subscriptionsByGeneration.clear();
+    _connectionSubscription = null;
+    await Future.wait(
+      subscriptions.map((subscription) => subscription.cancel()),
+    );
+  }
+
+  void _armReconnectTimer(int timerId, int delayOrdinal) {
+    _kernelReconnectTimer?.cancel();
+    _kernelReconnectTimerId = timerId;
+    _kernelReconnectTimer = Timer(reconnectAfter(delayOrdinal), () {
+      if (_kernelReconnectTimerId != timerId) return;
+      _kernelReconnectTimer = null;
+      _kernelReconnectTimerId = null;
+      unawaited(
+        _socketDriver.dispatch(
+          SocketModelEvent.reconnectTimerFired(timerId: timerId),
+        ),
+      );
+    });
+  }
+
+  void _cancelReconnectTimer(int timerId) {
+    if (_kernelReconnectTimerId != timerId) return;
+    _kernelReconnectTimer?.cancel();
+    _kernelReconnectTimer = null;
+    _kernelReconnectTimerId = null;
+    reconnectTimer.cancel();
+  }
+
+  void _armHeartbeatTimer(int timerId) {
+    heartbeatTimer?.cancel();
+    _kernelHeartbeatTimerId = timerId;
+    heartbeatTimer = Timer.periodic(heartbeatInterval, (_) {
+      if (_kernelHeartbeatTimerId != timerId) return;
+      unawaited(
+        _socketDriver.dispatch(
+          SocketModelEvent.heartbeatTimerFired(timerId: timerId),
+        ),
+      );
+    });
+  }
+
+  void _cancelHeartbeatTimer(int timerId) {
+    if (_kernelHeartbeatTimerId != timerId) return;
+    heartbeatTimer?.cancel();
+    heartbeatTimer = null;
+    _kernelHeartbeatTimerId = null;
+  }
+
+  void _armDisconnectTimer(int timerId) {
+    _pendingDisconnectTimer?.cancel();
+    _kernelDisconnectTimerId = timerId;
+    _pendingDisconnectTimer = Timer(disconnectOnEmptyChannelsAfter, () {
+      if (_kernelDisconnectTimerId != timerId) return;
+      _pendingDisconnectTimer = null;
+      _kernelDisconnectTimerId = null;
+      unawaited(
+        _socketDriver.dispatch(
+          SocketModelEvent.disconnectTimerFired(timerId: timerId),
+        ),
+      );
+    });
+  }
+
+  void _cancelDisconnectTimer(int timerId) {
+    if (_kernelDisconnectTimerId != timerId) return;
+    _pendingDisconnectTimer?.cancel();
+    _pendingDisconnectTimer = null;
+    _kernelDisconnectTimerId = null;
+  }
+
+  void _sendKernelHeartbeat(int generation, int heartbeatRef) {
+    final localConnection = _connectionsByGeneration[generation];
+    if (localConnection == null) {
+      scheduleMicrotask(() {
+        unawaited(
+          _socketDriver.dispatch(
+            SocketModelEvent.heartbeatSendFailed(
+              generation: generation,
+              ref: heartbeatRef,
+              failureKind: FailureKind.send,
+            ),
+            cause: StateError('Generation $generation has no transport'),
+          ),
+        );
+      });
+      return;
+    }
+    pendingHeartbeatRef = heartbeatRef.toString();
+    _kernelPendingHeartbeatGeneration = generation;
+    _kernelPendingHeartbeatRef = heartbeatRef;
+    final message = Message(
+      topic: 'phoenix',
+      event: ChannelEvent.heartbeat,
+      payload: const {},
+      ref: pendingHeartbeatRef!,
+    );
+    try {
+      localConnection.sink.add(encode(message.toJson()));
+    } catch (error) {
+      scheduleMicrotask(() {
+        unawaited(
+          _socketDriver.dispatch(
+            SocketModelEvent.heartbeatSendFailed(
+              generation: generation,
+              ref: heartbeatRef,
+              failureKind: FailureKind.syncValue,
+            ),
+            cause: error,
+          ),
+        );
+      });
+    }
+  }
+
+  void _emitHeartbeat(HeartbeatStatus status) {
+    if (status != HeartbeatStatus.sent) {
+      pendingHeartbeatRef = null;
+      _kernelPendingHeartbeatGeneration = null;
+      _kernelPendingHeartbeatRef = null;
+    }
+    _heartbeatController.add(switch (status) {
+      HeartbeatStatus.sent => RealtimeHeartbeatStatus.sent,
+      HeartbeatStatus.ok => RealtimeHeartbeatStatus.ok,
+      HeartbeatStatus.error => RealtimeHeartbeatStatus.error,
+      HeartbeatStatus.timeout => RealtimeHeartbeatStatus.timeout,
+      HeartbeatStatus.none => throw StateError('Invalid heartbeat status'),
+    });
+  }
+
   /// Sets the JWT access token used for channel subscription authorization and
   /// Realtime RLS.
   ///
@@ -672,9 +1041,12 @@ class RealtimeClient {
 
   /// Unsubscribe from joined or joining channels with the specified topic.
   @internal
-  void leaveOpenTopic(String topic) {
+  void leaveOpenTopic(String topic, {RealtimeChannel? except}) {
     final dupChannel = channels.firstWhereOrNull(
-      (c) => c.topic == topic && (c.isJoined || c.isJoining),
+      (c) =>
+          !identical(c, except) &&
+          c.topic == topic &&
+          (c.isJoined || c.isJoining),
     );
     if (dupChannel != null) {
       log('transport', 'leaving duplicate topic "$topic"');
@@ -686,12 +1058,6 @@ class RealtimeClient {
     log('transport', 'connected to $endpointUrl');
     log('transport', 'connected', null, Level.FINE);
     unawaited(_resolveAccessTokenAndFlush());
-    reconnectTimer.reset();
-    if (heartbeatTimer != null) heartbeatTimer!.cancel();
-    heartbeatTimer = Timer.periodic(
-      heartbeatInterval,
-      (Timer t) => unawaited(sendHeartbeat()),
-    );
 
     try {
       for (final channel in channels) {
@@ -709,24 +1075,8 @@ class RealtimeClient {
   }
 
   /// communication has been closed
-  void _onConnectionClose() {
-    final statusCode = connection?.closeCode;
-    RealtimeCloseEvent? event;
-    if (statusCode != null) {
-      event = RealtimeCloseEvent(
-        code: statusCode,
-        reason: connection?.closeReason,
-      );
-    }
+  void _onConnectionClose([RealtimeCloseEvent? event]) {
     log('transport', 'close', event, Level.FINE);
-
-    /// SocketState.disconnected: by user with socket.disconnect()
-    /// SocketState.closed: NOT by user, should try to reconnect
-    if (connectionState == SocketState.closed) {
-      _triggerChanError(event);
-      reconnectTimer.scheduleTimeout();
-    }
-    if (heartbeatTimer != null) heartbeatTimer!.cancel();
     _statusController.add(
       RealtimeConnectionStatusChange(RealtimeConnectionStatus.closed, event),
     );
@@ -803,17 +1153,20 @@ class RealtimeClient {
 
   @internal
   Future<void> sendHeartbeat() async {
-    if (!isConnected) {
+    if (!isConnected) return;
+    final timerId = _kernelHeartbeatTimerId;
+    if (timerId != null) {
+      await _socketDriver.dispatch(
+        SocketModelEvent.heartbeatTimerFired(timerId: timerId),
+      );
       return;
     }
 
-    // If the previous heartbeat hasn't received a reply, close the connection.
+    // Compatibility for the historically mutable connectionState and
+    // pendingHeartbeatRef test seams. Production connections always own a
+    // kernel heartbeat timer and use the branch above.
     if (pendingHeartbeatRef != null) {
       pendingHeartbeatRef = null;
-      log(
-        'transport',
-        'heartbeat timeout. Attempting to re-establish connection',
-      );
       _heartbeatController.add(RealtimeHeartbeatStatus.timeout);
       unawaited(
         connection?.sink.close(
@@ -833,6 +1186,6 @@ class RealtimeClient {
       ),
     );
     _heartbeatController.add(RealtimeHeartbeatStatus.sent);
-    await setAccessToken(accessToken);
+    await setAccessToken(null);
   }
 }

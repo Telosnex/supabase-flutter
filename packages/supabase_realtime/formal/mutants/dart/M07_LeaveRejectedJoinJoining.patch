@@ -1,0 +1,16 @@
+--- a/lib/src/kernel/realtime_channel_kernel.dart
++++ b/lib/src/kernel/realtime_channel_kernel.dart
+@@ -208,10 +208,10 @@
+         ],
+       );
+     }
+-    return _failAndSchedule(
+-      state,
++    return _result(
+       ChannelModelAction.rejectJoinAndSchedule,
+-      event.replyStatus!,
++      state,
++      [ChannelModelEffect.emitChannelError(replyStatus: event.replyStatus!)],
+     );
+   }
+ 

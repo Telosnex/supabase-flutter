@@ -2,6 +2,8 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:postgres/postgres.dart';
 import 'package:supabase_realtime/supabase_realtime.dart';
@@ -89,6 +91,59 @@ void main() {
         expect(result, 'ok');
         expect(channel.isJoined, isFalse);
       });
+
+      test('real-server lifecycle trace is admitted by TLC', () async {
+        final traces = <Map<String, Object?>>[];
+        final tracedClient = RealtimeClient(
+          localStackRealtimeUrl,
+          version: version,
+          parameters: {'apikey': generateRealtimeToken()},
+          heartbeatInterval: const Duration(milliseconds: 500),
+          logger: (kind, message, data) {
+            if (kind == 'formal' &&
+                (message == 'socket_transition' ||
+                    message == 'lifecycle_transition')) {
+              traces.add((data! as Map).cast<String, Object?>());
+            }
+          },
+        );
+        final channel = tracedClient.channel(
+          'trace-soak-${version.wireVersion}',
+          const RealtimeChannelConfig(self: true),
+        );
+        try {
+          await _subscribe(channel);
+          await channel.sendBroadcastMessage(
+            event: 'trace',
+            payload: {
+              'payload': {'ok': true},
+            },
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 750));
+          await channel.unsubscribe();
+          await tracedClient.disconnect();
+
+          final directory = Directory.systemTemp.createTempSync(
+            'realtime_trace_soak_',
+          );
+          addTearDown(() => directory.deleteSync(recursive: true));
+          final trace = File('${directory.path}/trace.ndjson')
+            ..writeAsStringSync('${traces.map(jsonEncode).join('\n')}\n');
+          final result = await Process.run(
+            Platform.resolvedExecutable,
+            ['run', 'formal/tool/validate_trace.dart', trace.path],
+          );
+          expect(
+            result.exitCode,
+            0,
+            reason: '${result.stdout}\n${result.stderr}',
+          );
+          expect(traces, isNotEmpty);
+        } finally {
+          await tracedClient.removeAllChannels();
+          await tracedClient.disconnect();
+        }
+      }, timeout: const Timeout(Duration(seconds: 45)));
 
       test('receives its own broadcast when self is enabled', () async {
         final channel = client.channel(

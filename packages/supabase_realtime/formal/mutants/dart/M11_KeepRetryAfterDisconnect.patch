@@ -1,0 +1,11 @@
+--- a/lib/src/kernel/realtime_socket_kernel.dart
++++ b/lib/src/kernel/realtime_socket_kernel.dart
+@@ -190,7 +190,7 @@
+   SocketModelState _downBase(SocketModelState state) => state.copyWith(
+     intent: SocketIntent.down,
+     retryCount: 0,
+-    reconnectTimer: _noReconnectTimer,
++    reconnectTimer: state.reconnectTimer,
+     heartbeatTimer: _noGenerationTimer,
+     disconnectTimer: _noTimer,
+     pendingHeartbeat: _noHeartbeatDebt,

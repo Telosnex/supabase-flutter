@@ -1,0 +1,50 @@
+{
+  "M01_KeepPushTimeoutOnResend": {
+    "patch": "M01_KeepPushTimeoutOnResend.patch",
+    "detector": "channelPushOracle"
+  },
+  "M02_BypassTokenProvider": {
+    "patch": "M02_BypassTokenProvider.patch",
+    "detector": "socketOracle"
+  },
+  "M05_CarryHeartbeatDebt": {
+    "patch": "M05_CarryHeartbeatDebt.patch",
+    "detector": "socketOracle"
+  },
+  "M06_WedgeConnectingOnSyncThrow": {
+    "patch": "M06_WedgeConnectingOnSyncThrow.patch",
+    "detector": "socketOracle"
+  },
+  "M07_LeaveRejectedJoinJoining": {
+    "patch": "M07_LeaveRejectedJoinJoining.patch",
+    "detector": "channelPushOracle"
+  },
+  "M08_SelfRearmRejoinTimer": {
+    "patch": "M08_SelfRearmRejoinTimer.patch",
+    "detector": "channelPushOracle"
+  },
+  "M09_EvictRejoiningChannel": {
+    "patch": "M09_EvictRejoiningChannel.patch",
+    "detector": "channelPushOracle"
+  },
+  "M10_NoRetryOnSyncThrow": {
+    "patch": "M10_NoRetryOnSyncThrow.patch",
+    "detector": "socketOracle"
+  },
+  "M11_KeepRetryAfterDisconnect": {
+    "patch": "M11_KeepRetryAfterDisconnect.patch",
+    "detector": "socketOracle"
+  },
+  "M12_ResetRetryDuringRecovery": {
+    "patch": "M12_ResetRetryDuringRecovery.patch",
+    "detector": "socketOracle"
+  },
+  "D03_NullPayloadCrash": {
+    "patch": "D03_NullPayloadCrash.patch",
+    "detector": "property"
+  },
+  "D04_MutatePresenceInput": {
+    "patch": "D04_MutatePresenceInput.patch",
+    "detector": "property"
+  }
+}

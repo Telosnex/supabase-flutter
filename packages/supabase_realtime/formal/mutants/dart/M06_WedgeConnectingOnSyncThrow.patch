@@ -1,0 +1,11 @@
+--- a/lib/src/kernel/realtime_socket_kernel.dart
++++ b/lib/src/kernel/realtime_socket_kernel.dart
+@@ -363,7 +363,7 @@
+     return _result(
+       SocketAction.recoverOpenFailure,
+       state.copyWith(
+-        phase: SocketPhase.idle,
++        phase: SocketPhase.connecting,
+         closeKind: CloseKind.none,
+         afterClose: AfterClose.none,
+         activeGeneration: 0,

@@ -1,0 +1,132 @@
+import 'dart:async';
+import 'dart:collection';
+
+import 'generated/model_hash.dart';
+import 'generated/model_schema.dart';
+import 'realtime_channel_kernel.dart';
+import 'realtime_socket_driver.dart' show SocketTraceSink;
+
+typedef ChannelEffectExecutor =
+    FutureOr<void> Function(
+      ChannelModelEffect effect,
+      Object? metadata,
+    );
+typedef ChannelRepresentationValidator =
+    bool Function(
+      ChannelModelState state,
+    );
+
+/// Serial event queue and sole state owner for one channel lifecycle.
+final class RealtimeChannelDriver {
+  RealtimeChannelDriver({
+    required int channelId,
+    required ChannelEffectExecutor executeEffect,
+    SocketTraceSink? traceSink,
+    ChannelRepresentationValidator? validateRepresentation,
+    String? instance,
+    RealtimeChannelKernel kernel = const RealtimeChannelKernel(),
+  }) : _executeEffect = executeEffect,
+       _traceSink = traceSink,
+       _validateRepresentation = validateRepresentation,
+       _instance = instance ?? 'channel:$channelId',
+       _kernel = kernel,
+       _state = RealtimeChannelKernel.initialState(channelId: channelId);
+
+  final ChannelEffectExecutor _executeEffect;
+  final SocketTraceSink? _traceSink;
+  final ChannelRepresentationValidator? _validateRepresentation;
+  final RealtimeChannelKernel _kernel;
+  final String _instance;
+  final Queue<_ChannelRequest> _events = Queue();
+
+  ChannelModelState _state;
+  var _sequence = 0;
+  var _draining = false;
+  var _activeEffectBatches = 0;
+
+  ChannelModelState get state => _state;
+  int get activeJoinEpoch => _state.activeJoinEpoch;
+  bool get socketAvailable => _state.socketAvailable;
+  ChannelPhase get phase => _state.phase;
+
+  Future<ChannelTransitionResult> dispatch(
+    ChannelModelEvent event, {
+    Object? metadata,
+  }) {
+    final request = _ChannelRequest(event: event, metadata: metadata);
+    _events.add(request);
+    _drainEvents();
+    return request.completer.future;
+  }
+
+  void _drainEvents() {
+    if (_draining) return;
+    _draining = true;
+    try {
+      while (_events.isNotEmpty) {
+        final request = _events.removeFirst();
+        final preState = _state;
+        final result = _kernel.step(preState, request.event);
+        if (result.disposition == TransitionDisposition.rejected) {
+          request.completer.completeError(
+            StateError(
+              'Channel shell supplied an invalid event: '
+              '${request.event.toJson()} from ${preState.toJson()}',
+            ),
+          );
+          continue;
+        }
+        _state = result.postState;
+        _sequence++;
+        _traceSink?.call({
+          'schemaHash': realtimeFormalManifestSha256,
+          'modelHash': realtimeSocketModelSha256,
+          'machine': 'channel',
+          'instance': _instance,
+          'sequence': _sequence,
+          'event': request.event.toJson(),
+          'action': result.action.wireName,
+          'disposition': result.disposition.wireName,
+          'preState': preState.toJson(),
+          'postState': result.postState.toJson(),
+          'effects': result.effects.map((effect) => effect.toJson()).toList(),
+        });
+        unawaited(_runEffects(request, result));
+      }
+    } finally {
+      _draining = false;
+    }
+  }
+
+  Future<void> _runEffects(
+    _ChannelRequest request,
+    ChannelTransitionResult result,
+  ) async {
+    _activeEffectBatches++;
+    try {
+      for (final effect in result.effects) {
+        final execution = _executeEffect(effect, request.metadata);
+        if (execution is Future) await execution;
+      }
+      request.completer.complete(result);
+    } catch (error, stackTrace) {
+      request.completer.completeError(error, stackTrace);
+    } finally {
+      _activeEffectBatches--;
+      if (_activeEffectBatches == 0) {
+        assert(
+          _validateRepresentation?.call(_state) ?? true,
+          'Channel shell resources do not match model obligations',
+        );
+      }
+    }
+  }
+}
+
+final class _ChannelRequest {
+  _ChannelRequest({required this.event, required this.metadata});
+
+  final ChannelModelEvent event;
+  final Object? metadata;
+  final completer = Completer<ChannelTransitionResult>();
+}

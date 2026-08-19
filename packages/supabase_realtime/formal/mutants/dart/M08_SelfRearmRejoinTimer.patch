@@ -1,0 +1,11 @@
+--- a/lib/src/kernel/realtime_channel_kernel.dart
++++ b/lib/src/kernel/realtime_channel_kernel.dart
+@@ -315,7 +315,7 @@
+         phase: ChannelPhase.joining,
+         activeJoinEpoch: epoch,
+         nextJoinEpoch: epoch + 1,
+-        rejoinTimer: _noTimer,
++        rejoinTimer: state.rejoinTimer,
+       ),
+       [
+         ...prefix,

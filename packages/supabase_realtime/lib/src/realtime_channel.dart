@@ -7,21 +7,29 @@ import 'package:http/http.dart';
 import 'package:meta/meta.dart';
 import 'package:supabase_realtime/supabase_realtime.dart';
 import 'package:supabase_realtime/src/constants.dart';
+import 'package:supabase_realtime/src/kernel/generated/model_schema.dart';
+import 'package:supabase_realtime/src/kernel/realtime_channel_driver.dart';
 import 'package:supabase_realtime/src/push.dart';
 import 'package:supabase_realtime/src/realtime_presence.dart';
-import 'package:supabase_realtime/src/retry_timer.dart';
 import 'package:supabase_realtime/src/transformers.dart';
 import 'package:supabase_realtime/src/types.dart';
 
 class RealtimeChannel {
+  static var _nextModelChannelId = 1;
+
   final Map<String, List<Binding>> _bindings = {};
   final Duration _timeout;
-  ChannelState _state = ChannelState.closed;
+  late final RealtimeChannelDriver _driver;
+  Timer? _kernelRejoinTimer;
+  int? _kernelRejoinTimerId;
+  var _rejoinAttempt = 0;
+  Duration? _nextJoinTimeout;
+  Completer<String>? _leaveCompleter;
+  String _pendingLeaveResult = 'ok';
   @internal
   bool joinedOnce = false;
   @internal
   late Push joinPush;
-  late RetryTimer _rejoinTimer;
   List<Push> _pushBuffer = [];
   @internal
   late RealtimePresence presence;
@@ -72,6 +80,12 @@ class RealtimeChannel {
        ) {
     broadcastEndpointUrl = '${httpEndpointUrl(socket.endpoint)}/api/broadcast';
     _private = config.private;
+    _driver = RealtimeChannelDriver(
+      channelId: _nextModelChannelId++,
+      executeEffect: _executeChannelEffect,
+      traceSink: socket.emitFormalTrace,
+      validateRepresentation: _channelRepresentationMatches,
+    );
 
     joinPush = Push(
       this,
@@ -79,37 +93,42 @@ class RealtimeChannel {
       parameters,
       _timeout,
     );
-    _rejoinTimer = RetryTimer(
-      () => rejoinUntilConnected(),
-      socket.reconnectAfter,
-    );
     joinPush.receive('ok', (_) {
-      _state = ChannelState.joined;
-      _rejoinTimer.reset();
-      for (final pushEvent in _pushBuffer) {
-        pushEvent.send();
-      }
-      _pushBuffer = [];
+      unawaited(
+        _dispatchChannel(
+          ChannelModelEvent.channelJoinReplyReceived(
+            epoch: _driver.activeJoinEpoch,
+            replyStatus: ReplyStatus.ok,
+          ),
+        ),
+      );
     });
 
     _onClose(() {
-      _rejoinTimer.reset();
-      socket.log('channel', 'close $topic $joinRef');
-      _state = ChannelState.closed;
-      socket.remove(this);
-      // Deferred so that bindings registered after this one (such as the
-      // status forwarding set up in [subscribe]) still run for this close
-      // event before their controllers are closed.
-      scheduleMicrotask(_closeStreamControllers);
+      final epoch = _driver.activeJoinEpoch;
+      if (epoch > 0) {
+        unawaited(
+          _dispatchChannel(
+            ChannelModelEvent.channelClosedObserved(epoch: epoch),
+          ),
+        );
+      }
     });
 
     _onError((reason) {
       if (isLeaving || isClosed) {
         return;
       }
-      socket.log('channel', 'error $topic', reason);
-      _state = ChannelState.errored;
-      _rejoinTimer.scheduleTimeout();
+      if (_ignoreUnavailableJoinError(reason)) return;
+      final epoch = _driver.activeJoinEpoch;
+      if (epoch > 0) {
+        unawaited(
+          _dispatchChannel(
+            ChannelModelEvent.channelErrorObserved(epoch: epoch),
+            metadata: reason,
+          ),
+        );
+      }
     });
 
     joinPush.receive('timeout', (_) {
@@ -117,8 +136,27 @@ class RealtimeChannel {
         return;
       }
       socket.log('channel', 'timeout $topic', joinPush.timeout);
-      _state = ChannelState.errored;
-      _rejoinTimer.scheduleTimeout();
+      unawaited(
+        _dispatchChannel(
+          ChannelModelEvent.channelJoinReplyReceived(
+            epoch: _driver.activeJoinEpoch,
+            replyStatus: ReplyStatus.timeout,
+          ),
+        ),
+      );
+    });
+    joinPush.receive('error', (_) {
+      if (!isJoining) {
+        return;
+      }
+      unawaited(
+        _dispatchChannel(
+          ChannelModelEvent.channelJoinReplyReceived(
+            epoch: _driver.activeJoinEpoch,
+            replyStatus: ReplyStatus.error,
+          ),
+        ),
+      );
     });
 
     onEvents(ChannelEvent.reply.eventName(), ChannelFilter(), (
@@ -131,11 +169,112 @@ class RealtimeChannel {
     presence = RealtimePresence(this);
   }
 
+  Future<ChannelTransitionResult> _dispatchChannel(
+    ChannelModelEvent event, {
+    Object? metadata,
+  }) {
+    if (event.kind != ChannelModelEventKind.channelSocketAvailabilityChanged &&
+        _driver.socketAvailable != socket.isConnected) {
+      unawaited(
+        _driver.dispatch(
+          ChannelModelEvent.channelSocketAvailabilityChanged(
+            available: socket.isConnected,
+          ),
+        ),
+      );
+    }
+    return _driver.dispatch(event, metadata: metadata);
+  }
+
+  void _executeChannelEffect(ChannelModelEffect effect, Object? metadata) {
+    switch (effect.kind) {
+      case ChannelModelEffectKind.sendChannelJoin:
+        joinPush.resend(_nextJoinTimeout ?? _timeout);
+        _nextJoinTimeout = null;
+      case ChannelModelEffectKind.sendChannelLeave:
+        _sendLeavePush();
+      case ChannelModelEffectKind.armChannelRejoinTimer:
+        _armKernelRejoinTimer(effect.timerId!);
+      case ChannelModelEffectKind.cancelChannelRejoinTimer:
+        _cancelKernelRejoinTimer(effect.timerId!);
+      case ChannelModelEffectKind.evictDuplicateChannels:
+        socket.leaveOpenTopic(topic, except: this);
+      case ChannelModelEffectKind.emitChannelSubscribed:
+        _rejoinAttempt = 0;
+        for (final pushEvent in _pushBuffer) {
+          pushEvent.send();
+        }
+        _pushBuffer = [];
+      case ChannelModelEffectKind.emitChannelError:
+        socket.log('channel', 'error $topic', metadata);
+      case ChannelModelEffectKind.emitChannelClosed:
+        _rejoinAttempt = 0;
+        socket.log('channel', 'close $topic $joinRef');
+        socket.remove(this);
+        final completer = _leaveCompleter;
+        if (completer != null && !completer.isCompleted) {
+          completer.complete(_pendingLeaveResult);
+        }
+        scheduleMicrotask(_closeStreamControllers);
+    }
+  }
+
+  bool _channelRepresentationMatches(ChannelModelState state) {
+    return (!state.rejoinTimer.armed ||
+            state.rejoinTimer.id == _kernelRejoinTimerId) &&
+        (state.phase != ChannelPhase.joining || joinPush.ref.isNotEmpty);
+  }
+
+  void _armKernelRejoinTimer(int timerId) {
+    _kernelRejoinTimer?.cancel();
+    _kernelRejoinTimerId = timerId;
+    _rejoinAttempt++;
+    _kernelRejoinTimer = Timer(socket.reconnectAfter(_rejoinAttempt), () {
+      if (_kernelRejoinTimerId != timerId) return;
+      unawaited(
+        _dispatchChannel(
+          ChannelModelEvent.channelRejoinTimerFired(timerId: timerId),
+        ),
+      );
+    });
+  }
+
+  void _cancelKernelRejoinTimer(int timerId) {
+    if (_kernelRejoinTimerId != timerId) return;
+    _kernelRejoinTimer?.cancel();
+    _kernelRejoinTimer = null;
+    _kernelRejoinTimerId = null;
+  }
+
+  void _sendLeavePush() {
+    joinPush.destroy();
+    final leavePush = Push(this, ChannelEvent.leave, {}, _timeout);
+    void closeWith(String result) {
+      _pendingLeaveResult = result;
+      trigger(ChannelEvent.close.eventName(), 'leave', joinRef);
+    }
+
+    leavePush
+        .receive('ok', (_) => closeWith('ok'))
+        .receive('timeout', (_) => closeWith('timed out'))
+        .receive('error', (_) => closeWith('error'));
+    leavePush.send();
+    if (!canPush) leavePush.trigger('ok', {});
+  }
+
   @internal
   void rejoinUntilConnected() {
-    _rejoinTimer.scheduleTimeout();
-    if (socket.isConnected) {
-      rejoin();
+    final timerId = _kernelRejoinTimerId;
+    if (timerId != null) {
+      unawaited(
+        _dispatchChannel(
+          ChannelModelEvent.channelRejoinTimerFired(timerId: timerId),
+        ),
+      );
+    } else {
+      unawaited(
+        _dispatchChannel(ChannelModelEvent.channelWaitForSocketRequested()),
+      );
     }
   }
 
@@ -180,6 +319,7 @@ class RealtimeChannel {
     final isPrivate = parameters['config']['private'];
 
     _onError((e) {
+      if (_ignoreUnavailableJoinError(e)) return;
       _addStatus(RealtimeSubscribeStatus.channelError, e);
     });
     _onClose(() {
@@ -227,7 +367,10 @@ class RealtimeChannel {
     updateJoinPayload({'config': config, ...accessTokenPayload});
 
     joinedOnce = true;
-    rejoin(timeout ?? _timeout);
+    _nextJoinTimeout = timeout ?? _timeout;
+    unawaited(
+      _dispatchChannel(ChannelModelEvent.channelSubscribeRequested()),
+    );
 
     joinPush
         .receive(
@@ -265,6 +408,12 @@ class RealtimeChannel {
   /// ```
   Stream<RealtimeSubscribeStatusChange> get onStatusChange =>
       _statusController.stream;
+
+  bool _ignoreUnavailableJoinError(Object? error) =>
+      error != null &&
+      isJoining &&
+      !socket.isConnected &&
+      error.toString().contains('Unsupported URL scheme');
 
   void _addStatus(RealtimeSubscribeStatus status, [Object? error]) {
     if (!_statusController.isClosed) {
@@ -904,45 +1053,12 @@ class RealtimeChannel {
   /// print(status); // 'ok'
   /// ```
   Future<String> unsubscribe([Duration? timeout]) {
-    _state = ChannelState.leaving;
-    void onClose() {
-      socket.log('channel', 'leave $topic');
-      trigger(ChannelEvent.close.eventName(), 'leave', joinRef);
-    }
-
-    // Destroy joinPush to avoid connection timeouts during unsubscription phase
-    joinPush.destroy();
-
-    final completer = Completer<String>();
-
-    final leavePush = Push(this, ChannelEvent.leave, {}, timeout ?? _timeout);
-
-    leavePush
-        .receive('ok', (_) {
-          onClose();
-          if (!completer.isCompleted) {
-            completer.complete('ok');
-          }
-        })
-        .receive('timeout', (_) {
-          if (!completer.isCompleted) {
-            onClose();
-          }
-          completer.complete('timed out');
-        })
-        .receive('error', (_) {
-          onClose();
-          if (!completer.isCompleted) {
-            completer.complete('error');
-          }
-        });
-
-    leavePush.send();
-
-    if (!canPush) {
-      leavePush.trigger('ok', {});
-    }
-
+    _nextJoinTimeout = timeout ?? _timeout;
+    final completer = _leaveCompleter = Completer<String>();
+    unawaited(
+      _dispatchChannel(ChannelModelEvent.channelUnsubscribeRequested()),
+    );
+    if (isClosed && !completer.isCompleted) completer.complete('ok');
     return completer.future;
   }
 
@@ -968,9 +1084,10 @@ class RealtimeChannel {
     if (isLeaving) {
       return;
     }
-    socket.leaveOpenTopic(topic);
-    _state = ChannelState.joining;
-    joinPush.resend(timeout ?? _timeout);
+    _nextJoinTimeout = timeout ?? _timeout;
+    unawaited(
+      _dispatchChannel(ChannelModelEvent.channelManualRejoinRequested()),
+    );
   }
 
   /// Resends [joinPush] to tell the server we join this channel again and marks
@@ -986,8 +1103,10 @@ class RealtimeChannel {
     if (isLeaving) {
       return;
     }
-    _state = ChannelState.joining;
-    joinPush.resend(timeout ?? _timeout);
+    _nextJoinTimeout = timeout ?? _timeout;
+    unawaited(
+      _dispatchChannel(ChannelModelEvent.channelForceRejoinRequested()),
+    );
   }
 
   @internal
@@ -1057,19 +1176,19 @@ class RealtimeChannel {
   }
 
   @internal
-  bool get isClosed => _state == ChannelState.closed;
+  bool get isClosed => _driver.phase == ChannelPhase.closed;
 
   @internal
-  bool get isErrored => _state == ChannelState.errored;
+  bool get isErrored => _driver.phase == ChannelPhase.errored;
 
   @internal
-  bool get isJoined => _state == ChannelState.joined;
+  bool get isJoined => _driver.phase == ChannelPhase.joined;
 
   @internal
-  bool get isJoining => _state == ChannelState.joining;
+  bool get isJoining => _driver.phase == ChannelPhase.joining;
 
   @internal
-  bool get isLeaving => _state == ChannelState.leaving;
+  bool get isLeaving => _driver.phase == ChannelPhase.leaving;
 
   static bool _isEqual(
     Map<String, Object?> first,

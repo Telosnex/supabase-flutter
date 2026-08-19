@@ -1,0 +1,11 @@
+--- a/lib/src/kernel/realtime_socket_kernel.dart
++++ b/lib/src/kernel/realtime_socket_kernel.dart
+@@ -574,7 +574,7 @@
+       return _reject(state);
+     }
+     final base = state.copyWith(
+-      retryCount: _consumeRetry(state.retryCount),
++      retryCount: 0,
+       reconnectTimer: _noReconnectTimer,
+     );
+     return _result(

@@ -373,19 +373,31 @@ Map<String, Map<String, dynamic>> getPayloadRecords(
     'new': {},
     'old': {},
   };
+  final rawColumns = payload['columns'];
+  if (rawColumns is! Iterable) return records;
+  final columns = rawColumns
+      .whereType<Map<Object?, Object?>>()
+      .map((column) => Map<String, dynamic>.from(column))
+      .toList();
 
   if (payload['type'] == 'INSERT' || payload['type'] == 'UPDATE') {
-    records['new'] = convertChangeData(
-      List<Map<String, dynamic>>.from(payload['columns']),
-      Map<String, dynamic>.from(payload['record']),
-    );
+    final record = payload['record'];
+    if (record is Map) {
+      records['new'] = convertChangeData(
+        columns,
+        Map<String, dynamic>.from(record),
+      );
+    }
   }
 
   if (payload['type'] == 'UPDATE' || payload['type'] == 'DELETE') {
-    records['old'] = convertChangeData(
-      List<Map<String, dynamic>>.from(payload['columns']),
-      Map<String, dynamic>.from(payload['old_record']),
-    );
+    final oldRecord = payload['old_record'];
+    if (oldRecord is Map) {
+      records['old'] = convertChangeData(
+        columns,
+        Map<String, dynamic>.from(oldRecord),
+      );
+    }
   }
 
   return records;

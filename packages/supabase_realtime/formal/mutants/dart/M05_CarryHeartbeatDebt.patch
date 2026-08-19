@@ -1,0 +1,11 @@
+--- a/lib/src/kernel/realtime_socket_kernel.dart
++++ b/lib/src/kernel/realtime_socket_kernel.dart
+@@ -419,7 +419,7 @@
+     afterClose: AfterClose.none,
+     activeGeneration: 0,
+     heartbeatTimer: _noGenerationTimer,
+-    pendingHeartbeat: _noHeartbeatDebt,
++    pendingHeartbeat: state.pendingHeartbeat,
+   );
+ 
+   List<SocketModelEffect> _closeOutcomeEffects(

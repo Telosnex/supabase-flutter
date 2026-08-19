@@ -1,0 +1,11 @@
+--- a/lib/src/kernel/realtime_push_kernel.dart
++++ b/lib/src/kernel/realtime_push_kernel.dart
+@@ -55,7 +55,7 @@
+   PushTransitionResult _resend(PushModelState state) => _start(
+     state,
+     PushModelAction.resendPush,
+-    _cancelEffects(state),
++    const [],
+     send: true,
+   );
+ 

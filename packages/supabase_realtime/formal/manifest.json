@@ -1,0 +1,427 @@
+{
+  "schemaVersion": 1,
+  "model": "realtime_lifecycle",
+  "implementationPin": "07345bf9568a0ba495f1e34cb6ba542eddecc7e9",
+  "enums": {
+    "SocketIntent": [
+      "up",
+      "down"
+    ],
+    "SocketPhase": [
+      "idle",
+      "connecting",
+      "open",
+      "closing"
+    ],
+    "CloseKind": [
+      "none",
+      "user",
+      "recovery"
+    ],
+    "AfterClose": [
+      "none",
+      "idle",
+      "connectNow",
+      "backoff"
+    ],
+    "FailureKind": [
+      "none",
+      "sync",
+      "async",
+      "stream",
+      "server",
+      "requested",
+      "timeout",
+      "send"
+    ],
+    "HeartbeatStatus": [
+      "none",
+      "sent",
+      "ok",
+      "error",
+      "timeout"
+    ],
+    "GraceKind": [
+      "none",
+      "zero",
+      "nonzero"
+    ],
+    "TransitionDisposition": [
+      "applied",
+      "ignored",
+      "rejected"
+    ],
+    "TokenMode": [
+      "none",
+      "currentSource",
+      "cachedOverride"
+    ],
+    "CloseReason": [
+      "none",
+      "userDisconnect",
+      "emptyChannels",
+      "heartbeatTimeout",
+      "transportFailure"
+    ],
+    "ChannelIntent": [
+      "joined",
+      "left"
+    ],
+    "ChannelPhase": [
+      "closed",
+      "joining",
+      "joined",
+      "errored",
+      "leaving"
+    ],
+    "ReplyStatus": [
+      "none",
+      "ok",
+      "error",
+      "timeout"
+    ],
+    "PushPhase": [
+      "idle",
+      "pending",
+      "terminal"
+    ]
+  },
+  "records": {
+    "TimerObligation": {
+      "armed": "bool",
+      "id": "int"
+    },
+    "ReconnectTimerObligation": {
+      "armed": "bool",
+      "id": "int",
+      "delayOrdinal": "int"
+    },
+    "GenerationTimerObligation": {
+      "armed": "bool",
+      "id": "int",
+      "generation": "int"
+    },
+    "HeartbeatDebt": {
+      "active": "bool",
+      "generation": "int",
+      "ref": "int"
+    },
+    "SocketModelState": {
+      "intent": "enum:SocketIntent",
+      "phase": "enum:SocketPhase",
+      "closeKind": "enum:CloseKind",
+      "afterClose": "enum:AfterClose",
+      "activeGeneration": "int",
+      "nextGeneration": "int",
+      "retryCount": "int",
+      "reconnectTimer": "record:ReconnectTimerObligation",
+      "heartbeatTimer": "record:GenerationTimerObligation",
+      "disconnectTimer": "record:TimerObligation",
+      "nextTimerId": "int",
+      "pendingHeartbeat": "record:HeartbeatDebt",
+      "nextHeartbeatRef": "int",
+      "hasChannelDemand": "bool",
+      "started": "bool"
+    },
+    "EpochTimerObligation": {
+      "armed": "bool",
+      "id": "int",
+      "epoch": "int"
+    },
+    "RefTimerObligation": {
+      "armed": "bool",
+      "id": "int",
+      "ref": "int"
+    },
+    "ChannelModelState": {
+      "channelId": "int",
+      "intent": "enum:ChannelIntent",
+      "phase": "enum:ChannelPhase",
+      "activeJoinEpoch": "int",
+      "nextJoinEpoch": "int",
+      "rejoinTimer": "record:EpochTimerObligation",
+      "nextTimerId": "int",
+      "socketAvailable": "bool",
+      "started": "bool"
+    },
+    "PushModelState": {
+      "phase": "enum:PushPhase",
+      "sent": "bool",
+      "activeRef": "int",
+      "nextRef": "int",
+      "timeoutTimer": "record:RefTimerObligation",
+      "nextTimerId": "int",
+      "terminalStatus": "enum:ReplyStatus",
+      "terminalDelivered": "bool"
+    }
+  },
+  "events": {
+    "ConnectRequested": {},
+    "DisconnectRequested": {},
+    "ChannelDemandAppeared": {},
+    "ChannelDemandDisappeared": {
+      "grace": "enum:GraceKind"
+    },
+    "TransportOpened": {
+      "generation": "int"
+    },
+    "TransportOpenFailed": {
+      "generation": "int",
+      "failureKind": "enum:FailureKind"
+    },
+    "TransportErrorObserved": {
+      "generation": "int",
+      "failureKind": "enum:FailureKind"
+    },
+    "TransportClosed": {
+      "generation": "int",
+      "failureKind": "enum:FailureKind"
+    },
+    "TransportCloseFailed": {
+      "generation": "int",
+      "failureKind": "enum:FailureKind"
+    },
+    "HeartbeatSendFailed": {
+      "generation": "int",
+      "ref": "int",
+      "failureKind": "enum:FailureKind"
+    },
+    "ReconnectTimerFired": {
+      "timerId": "int"
+    },
+    "HeartbeatTimerFired": {
+      "timerId": "int"
+    },
+    "DisconnectTimerFired": {
+      "timerId": "int"
+    },
+    "HeartbeatReplyReceived": {
+      "generation": "int",
+      "ref": "int",
+      "heartbeatStatus": "enum:HeartbeatStatus"
+    }
+  },
+  "actions": {
+    "startConnect": "finite",
+    "connectAlreadySatisfied": "finite",
+    "connectAfterCurrentClose": "finite",
+    "beginUserClose": "finite",
+    "retargetCloseToIdle": "finite",
+    "quiesceWithoutTransport": "finite",
+    "recordChannelDemand": "finite",
+    "recordEmptyDemandWithoutTimer": "finite",
+    "cancelDeferredDisconnect": "finite",
+    "scheduleDeferredDisconnect": "finite",
+    "disconnectEmptyDemandNow": "finite",
+    "channelDemandAlreadyRecorded": "finite",
+    "acceptTransportOpen": "finite",
+    "recoverOpenFailure": "finite",
+    "reportTransportError": "finite",
+    "settleCloseIdle": "finite",
+    "settleCloseAndConnect": "finite",
+    "settleCloseAndBackoff": "finite",
+    "recoverUnexpectedClose": "finite",
+    "startReconnectAttempt": "finite",
+    "sendHeartbeat": "finite",
+    "timeoutHeartbeat": "finite",
+    "acceptHeartbeatReply": "finite",
+    "recoverHeartbeatSendFailure": "finite",
+    "fireDeferredDisconnect": "finite",
+    "ignoreStaleTransportEvent": "finite",
+    "ignoreSupersededOperationEvent": "finite",
+    "ignoreStaleTimerEvent": "finite",
+    "ignoreHeartbeatReply": "finite",
+    "rejectContractViolation": "invalid-input"
+  },
+  "effects": {
+    "OpenTransport": {
+      "generation": "int"
+    },
+    "CloseTransport": {
+      "generation": "int",
+      "closeReason": "enum:CloseReason"
+    },
+    "ArmReconnectTimer": {
+      "timerId": "int",
+      "delayOrdinal": "int"
+    },
+    "CancelReconnectTimer": {
+      "timerId": "int"
+    },
+    "ArmHeartbeatTimer": {
+      "timerId": "int",
+      "generation": "int"
+    },
+    "CancelHeartbeatTimer": {
+      "timerId": "int"
+    },
+    "ArmDisconnectTimer": {
+      "timerId": "int"
+    },
+    "CancelDisconnectTimer": {
+      "timerId": "int"
+    },
+    "SendHeartbeat": {
+      "generation": "int",
+      "ref": "int"
+    },
+    "ResolveCurrentToken": {
+      "tokenMode": "enum:TokenMode"
+    },
+    "EmitConnectionOpen": {},
+    "EmitConnectionClosed": {
+      "failureKind": "enum:FailureKind"
+    },
+    "EmitConnectionError": {
+      "failureKind": "enum:FailureKind"
+    },
+    "EmitHeartbeat": {
+      "heartbeatStatus": "enum:HeartbeatStatus"
+    },
+    "NotifyChannelsOfTransportError": {
+      "failureKind": "enum:FailureKind"
+    }
+  },
+  "trace": {
+    "requiredFields": [
+      "schemaHash",
+      "modelHash",
+      "machine",
+      "instance",
+      "sequence",
+      "event",
+      "action",
+      "disposition",
+      "preState",
+      "postState",
+      "effects"
+    ],
+    "identityFields": [
+      "activeGeneration",
+      "nextGeneration",
+      "generation",
+      "timerId",
+      "id",
+      "ref",
+      "nextTimerId",
+      "nextHeartbeatRef",
+      "channelId",
+      "requesterChannelId",
+      "activeJoinEpoch",
+      "nextJoinEpoch",
+      "epoch",
+      "activeRef",
+      "nextRef"
+    ]
+  },
+  "channelEvents": {
+    "ChannelSubscribeRequested": {},
+    "ChannelManualRejoinRequested": {},
+    "ChannelForceRejoinRequested": {},
+    "ChannelWaitForSocketRequested": {},
+    "ChannelUnsubscribeRequested": {},
+    "ChannelSocketAvailabilityChanged": {
+      "available": "bool"
+    },
+    "ChannelJoinReplyReceived": {
+      "epoch": "int",
+      "replyStatus": "enum:ReplyStatus"
+    },
+    "ChannelErrorObserved": {
+      "epoch": "int"
+    },
+    "ChannelClosedObserved": {
+      "epoch": "int"
+    },
+    "ChannelRejoinTimerFired": {
+      "timerId": "int"
+    }
+  },
+  "channelActions": {
+    "startChannelJoin": "finite",
+    "subscribeAlreadyActive": "finite",
+    "beginChannelLeave": "finite",
+    "channelAlreadyClosed": "finite",
+    "recordSocketAvailability": "finite",
+    "acceptJoinReply": "finite",
+    "rejectJoinAndSchedule": "finite",
+    "recordChannelError": "finite",
+    "closeChannel": "finite",
+    "startChannelRejoin": "finite",
+    "waitForSocketToRejoin": "finite",
+    "ignoreStaleChannelEvent": "finite",
+    "ignoreSupersededJoinEvent": "finite",
+    "rejectChannelContractViolation": "invalid-input"
+  },
+  "channelEffects": {
+    "SendChannelJoin": {
+      "epoch": "int"
+    },
+    "SendChannelLeave": {
+      "epoch": "int"
+    },
+    "ArmChannelRejoinTimer": {
+      "timerId": "int",
+      "epoch": "int"
+    },
+    "CancelChannelRejoinTimer": {
+      "timerId": "int"
+    },
+    "EvictDuplicateChannels": {
+      "requesterChannelId": "int"
+    },
+    "EmitChannelSubscribed": {},
+    "EmitChannelError": {
+      "replyStatus": "enum:ReplyStatus"
+    },
+    "EmitChannelClosed": {}
+  },
+  "pushEvents": {
+    "PushSendRequested": {},
+    "PushPrepareRequested": {},
+    "PushResendRequested": {},
+    "PushReplyReceived": {
+      "ref": "int",
+      "replyStatus": "enum:ReplyStatus"
+    },
+    "PushTimeoutFired": {
+      "timerId": "int"
+    },
+    "PushDestroyRequested": {}
+  },
+  "pushActions": {
+    "startPush": "finite",
+    "preparePush": "finite",
+    "sendPreparedPush": "finite",
+    "resendPush": "finite",
+    "acceptPushReply": "finite",
+    "timeoutPush": "finite",
+    "destroyPush": "finite",
+    "ignoreStalePushReply": "finite",
+    "ignoreStalePushTimer": "finite",
+    "ignorePushAlreadyPending": "finite",
+    "rejectPushContractViolation": "invalid-input"
+  },
+  "pushEffects": {
+    "BindPushReply": {
+      "ref": "int"
+    },
+    "UnbindPushReply": {
+      "ref": "int"
+    },
+    "ArmPushTimeoutTimer": {
+      "timerId": "int",
+      "ref": "int"
+    },
+    "CancelPushTimeoutTimer": {
+      "timerId": "int"
+    },
+    "SendPush": {
+      "ref": "int"
+    },
+    "DeliverPushResult": {
+      "ref": "int",
+      "replyStatus": "enum:ReplyStatus"
+    }
+  }
+}

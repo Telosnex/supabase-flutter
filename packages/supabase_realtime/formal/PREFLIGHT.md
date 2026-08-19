@@ -1,8 +1,8 @@
 # Supabase Realtime formal preflight
 
-This directory reserves the upstream-facing formal verification boundary. It
-contains no TLA+ specification yet. Modeling starts only after this preflight is
-reviewed.
+This document records the pre-model evidence and constraints that were
+reviewed before implementation. The model, reducer, oracle, mutants, and gate
+now live beside it; see `README.md` for current commands and baselines.
 
 ## Pinned implementation targets
 
@@ -87,10 +87,9 @@ dart test \
 Expected baseline: exit 1 with 31 passes, 11 assertion failures, and 5 errors.
 Any different result requires review before modeling or refactoring.
 
-## Planned formal gate
+## Implemented formal gate
 
-No `.tla` or `.cfg` file exists yet. When modeling begins, add the model, finite
-configurations, and runner in one commit. The runner contract is already fixed:
+The model, finite configurations, and runner implement this fixed contract:
 
 1. Verify the pinned `tla2tools.jar` SHA-256 before execution.
 2. Parse every pristine model and run every positive finite configuration.
@@ -152,18 +151,17 @@ discipline. The locks, in gate order:
    without its handwritten regression. Property tests catch mutant forms of
    the two data defects (#3 and #4), which remain outside the lifecycle model.
 
-The shell can classify external outcomes into events but cannot read or mutate
-`ModelState` or make lifecycle decisions. An architecture test enforces that
-boundary. Representation assertions tie timer and transport handles to state
-obligations and generations.
+The shell classifies external outcomes into events but cannot mutate
+`ModelState` or choose lifecycle policy. An architecture test enforces that
+boundary. Timer and transport handles retain the identities allocated by model
+effects.
 
 Change protocol: a contract change touches the spec, kernel, and tests in one
 commit, plus the manifest and generated schemas when vocabulary changes. A Dart
 correction can leave the model untouched when it makes divergent code conform
 to that model. A pure refactor lands alone only when finite oracle equivalence
 and runtime trace validation show no modeled behavior changed. The reserved
-paths above do not exist yet. They land with model and kernel work, not in this
-preflight.
+paths landed with the model and kernel work.
 
 ## Branch and review policy
 

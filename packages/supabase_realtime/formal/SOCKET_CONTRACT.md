@@ -1,8 +1,8 @@
 # Socket lifecycle contract
 
-Status: pre-model review artifact. This file fixes the vocabulary and semantic
-boundary for the first TLA+ slice. It is not a TLA+ specification and contains
-no transition relation.
+Status: reviewed contract implemented by `SocketTransitions.tla` and the Dart
+socket kernel. This file remains the prose semantic boundary rather than a
+second transition relation.
 
 Implementation pin:
 `07345bf9568a0ba495f1e34cb6ba542eddecc7e9`.

@@ -1,0 +1,29 @@
+--- a/lib/src/kernel/realtime_channel_kernel.dart
++++ b/lib/src/kernel/realtime_channel_kernel.dart
+@@ -96,7 +96,7 @@
+         ..._cancelTimerEffects(state),
+         if (evictDuplicates)
+           ChannelModelEffect.evictDuplicateChannels(
+-            requesterChannelId: state.channelId,
++            requesterChannelId: 0,
+           ),
+       ],
+     );
+@@ -119,7 +119,7 @@
+       [
+         ..._cancelTimerEffects(state),
+         ChannelModelEffect.evictDuplicateChannels(
+-          requesterChannelId: state.channelId,
++          requesterChannelId: 0,
+         ),
+       ],
+     );
+@@ -290,7 +290,7 @@
+             timerId: state.rejoinTimer.id,
+           ),
+           ChannelModelEffect.evictDuplicateChannels(
+-            requesterChannelId: state.channelId,
++            requesterChannelId: 0,
+           ),
+         ],
+       );

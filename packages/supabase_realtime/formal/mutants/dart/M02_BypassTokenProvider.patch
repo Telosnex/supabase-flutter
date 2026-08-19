@@ -1,0 +1,12 @@
+--- a/lib/src/kernel/realtime_socket_kernel.dart
++++ b/lib/src/kernel/realtime_socket_kernel.dart
+@@ -620,9 +620,6 @@
+           SocketModelEffect.emitHeartbeat(
+             heartbeatStatus: HeartbeatStatus.sent,
+           ),
+-          SocketModelEffect.resolveCurrentToken(
+-            tokenMode: TokenMode.currentSource,
+-          ),
+         ],
+       );
+     }

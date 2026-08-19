@@ -1,0 +1,20 @@
+--- a/lib/src/realtime_presence.dart
++++ b/lib/src/realtime_presence.dart
+@@ -351,12 +351,11 @@
+         newStateMap[key] = (presences['metas'] as List).map<Presence>((
+           presence,
+         ) {
+-          final meta = Map<String, dynamic>.from(presence as Map);
+-          meta['presence_ref'] = meta['phx_ref'] as String;
+-          meta.remove('phx_ref');
+-          meta.remove('phx_ref_prev');
+-
+-          return Presence.fromJson(meta);
++          presence['presence_ref'] = presence['phx_ref'] as String;
++          presence.remove('phx_ref');
++          presence.remove('phx_ref_prev');
++
++          return Presence.fromJson(presence);
+         }).toList();
+       } else {
+         // presences is List<Presence>

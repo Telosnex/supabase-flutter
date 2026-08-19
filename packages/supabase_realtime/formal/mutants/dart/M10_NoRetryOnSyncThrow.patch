@@ -1,0 +1,15 @@
+--- a/lib/src/kernel/realtime_socket_kernel.dart
++++ b/lib/src/kernel/realtime_socket_kernel.dart
+@@ -367,11 +367,7 @@
+         closeKind: CloseKind.none,
+         afterClose: AfterClose.none,
+         activeGeneration: 0,
+-        reconnectTimer: ReconnectTimerObligation(
+-          armed: true,
+-          id: timerId,
+-          delayOrdinal: delay,
+-        ),
++        reconnectTimer: _noReconnectTimer,
+         heartbeatTimer: _noGenerationTimer,
+         nextTimerId: timerId + 1,
+         pendingHeartbeat: _noHeartbeatDebt,
