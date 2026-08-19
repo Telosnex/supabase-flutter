@@ -4,6 +4,8 @@
 // `sendHeartbeat` group) so it doesn't conflict with other fix branches that
 // also add tests at the end of that group.
 
+import 'dart:async';
+
 import 'package:mocktail/mocktail.dart';
 import 'package:supabase_realtime/supabase_realtime.dart';
 import 'package:test/test.dart';
@@ -29,13 +31,22 @@ void main() {
     // User-visible symptom: repeated immediate post-reconnect drops on a
     // flaky network.
     final sinks = <_MockWebSocketSink>[];
+    final incoming = <StreamController<dynamic>>[];
+    addTearDown(() async {
+      for (final controller in incoming) {
+        await controller.close();
+      }
+    });
 
     _MockIOWebSocketChannel makeChannel() {
       final c = _MockIOWebSocketChannel();
       final s = _MockWebSocketSink();
+      final stream = StreamController<dynamic>.broadcast();
+      incoming.add(stream);
       sinks.add(s);
       when(() => c.sink).thenReturn(s);
       when(() => c.ready).thenAnswer((_) => Future.value());
+      when(() => c.stream).thenAnswer((_) => stream.stream);
       when(() => s.add(any())).thenAnswer((_) {});
       when(() => s.close(any(), any())).thenAnswer((_) => Future.value());
       when(() => s.close()).thenAnswer((_) => Future.value());
@@ -50,7 +61,6 @@ void main() {
 
     // First session: send a heartbeat and leave it unacked.
     await socket.connect();
-    socket.connectionState = SocketState.open;
     await socket.sendHeartbeat();
     expect(
       socket.pendingHeartbeatRef,
@@ -63,7 +73,6 @@ void main() {
 
     // Fresh session.
     await socket.connect();
-    socket.connectionState = SocketState.open;
 
     // Next heartbeat tick on the new session.
     await socket.sendHeartbeat();

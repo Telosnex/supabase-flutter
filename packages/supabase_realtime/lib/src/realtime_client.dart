@@ -180,11 +180,16 @@ class RealtimeClient {
   /// it fires, so that quickly switching channels reuses the open socket.
   Timer? _pendingDisconnectTimer;
 
+  String? _pendingHeartbeatRef;
+
   /// reference ID of the most recently sent heartbeat.
   ///
   /// Used to keep track of whether the client is connected to the server.
+  ///
+  /// Read-only: the in-flight heartbeat is owned by the socket kernel, which
+  /// keeps this in step with its own `pendingHeartbeat` obligation.
   @internal
-  String? pendingHeartbeatRef;
+  String? get pendingHeartbeatRef => _pendingHeartbeatRef;
 
   /// Counter used by [makeRef] to generate a unique reference ID for every
   /// pushed message, including heartbeats.
@@ -204,7 +209,6 @@ class RealtimeClient {
   final Set<int> _terminalGenerationsReported = {};
   late final RealtimeSocketDriver _socketDriver;
   var _formalTraceSequence = 0;
-  var _preserveLegacyClosedState = false;
   @internal
   List<dynamic> sendBuffer = [];
 
@@ -352,10 +356,6 @@ class RealtimeClient {
 
   /// Disconnects the socket with status [code] and [reason] for the disconnect
   Future<void> disconnect({int? code, String? reason}) async {
-    final legacyState = connectionState;
-    final legacyConnection = connection;
-    final legacyOnlyConnection = _connectionsByGeneration.isEmpty;
-    _preserveLegacyClosedState = legacyState == SocketState.closed;
     await _socketDriver.dispatch(
       SocketModelEvent.disconnectRequested(),
       metadata: _CloseRequest(code: code, reason: reason),
@@ -364,21 +364,8 @@ class RealtimeClient {
       (state) =>
           state.intent == SocketIntent.down && state.phase == SocketPhase.idle,
     );
-    if (legacyConnection != null &&
-        legacyState == SocketState.open &&
-        legacyOnlyConnection) {
-      if (code != null) {
-        await legacyConnection.sink.close(code, reason ?? '');
-      } else {
-        await legacyConnection.sink.close();
-      }
-    }
     await _disposeAllTransports();
     connection = null;
-    if (legacyState == SocketState.closed) {
-      connectionState = SocketState.closed;
-    }
-    _preserveLegacyClosedState = false;
     log('transport', 'disconnected', null, Level.FINE);
   }
 
@@ -543,15 +530,6 @@ class RealtimeClient {
             ),
           ),
         );
-      } else {
-        // Compatibility for callers that historically assigned the public
-        // pendingHeartbeatRef test seam directly.
-        pendingHeartbeatRef = null;
-        _heartbeatController.add(
-          heartbeatStatus == 'ok'
-              ? RealtimeHeartbeatStatus.ok
-              : RealtimeHeartbeatStatus.error,
-        );
       }
     }
 
@@ -630,10 +608,8 @@ class RealtimeClient {
     final state = SocketModelState.fromJson(
       (trace['postState']! as Map).cast<String, Object?>(),
     );
-    if (!_preserveLegacyClosedState) {
-      connectionState = _publicConnectionState(state);
-    }
-    pendingHeartbeatRef = state.pendingHeartbeat.active
+    connectionState = _publicConnectionState(state);
+    _pendingHeartbeatRef = state.pendingHeartbeat.active
         ? state.pendingHeartbeat.ref.toString()
         : null;
     if (!state.pendingHeartbeat.active) {
@@ -774,7 +750,7 @@ class RealtimeClient {
     }
 
     if (identical(_connectionsByGeneration[generation], localConnection)) {
-      try {
+      {
         final subscription = localConnection.stream.listen(
           (message) => onConnectionMessage(message as Object),
           onError: (Object error, StackTrace stackTrace) {
@@ -792,9 +768,6 @@ class RealtimeClient {
         );
         _subscriptionsByGeneration[generation] = subscription;
         _connectionSubscription = subscription;
-      } on TypeError {
-        // Some existing injected test transports only implement ready/sink.
-        // A production WebSocketChannel always exposes a stream.
       }
     }
     _socketDriver.post(
@@ -1027,14 +1000,14 @@ class RealtimeClient {
       });
       return;
     }
-    pendingHeartbeatRef = heartbeatRef.toString();
+    _pendingHeartbeatRef = heartbeatRef.toString();
     _kernelPendingHeartbeatGeneration = generation;
     _kernelPendingHeartbeatRef = heartbeatRef;
     final message = Message(
       topic: 'phoenix',
       event: ChannelEvent.heartbeat,
       payload: const {},
-      ref: pendingHeartbeatRef!,
+      ref: _pendingHeartbeatRef!,
     );
     try {
       localConnection.sink.add(encode(message.toJson()));
@@ -1056,7 +1029,7 @@ class RealtimeClient {
 
   void _emitHeartbeat(HeartbeatStatus status) {
     if (status != HeartbeatStatus.sent) {
-      pendingHeartbeatRef = null;
+      _pendingHeartbeatRef = null;
       _kernelPendingHeartbeatGeneration = null;
       _kernelPendingHeartbeatRef = null;
     }
@@ -1212,37 +1185,12 @@ class RealtimeClient {
   Future<void> sendHeartbeat() async {
     if (!isConnected) return;
     final timerId = _kernelHeartbeatTimerId;
-    if (timerId != null) {
-      await _socketDriver.dispatch(
-        SocketModelEvent.heartbeatTimerFired(timerId: timerId),
-      );
-      return;
-    }
-
-    // Compatibility for the historically mutable connectionState and
-    // pendingHeartbeatRef test seams. Production connections always own a
-    // kernel heartbeat timer and use the branch above.
-    if (pendingHeartbeatRef != null) {
-      pendingHeartbeatRef = null;
-      _heartbeatController.add(RealtimeHeartbeatStatus.timeout);
-      unawaited(
-        connection?.sink.close(
-          RealtimeConstants.webSocketCloseNormal,
-          'heartbeat timeout',
-        ),
-      );
-      return;
-    }
-    pendingHeartbeatRef = makeRef();
-    push(
-      Message(
-        topic: 'phoenix',
-        event: ChannelEvent.heartbeat,
-        payload: {},
-        ref: pendingHeartbeatRef!,
-      ),
+    if (timerId == null) return;
+    // Token rotation is owned by the kernel's ResolveCurrentToken effect,
+    // emitted alongside SendHeartbeat. Resolving it again here would consult
+    // customAccessToken twice per heartbeat.
+    await _socketDriver.dispatch(
+      SocketModelEvent.heartbeatTimerFired(timerId: timerId),
     );
-    _heartbeatController.add(RealtimeHeartbeatStatus.sent);
-    await setAccessToken(null);
   }
 }

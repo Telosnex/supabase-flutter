@@ -307,7 +307,13 @@ void main() {
       );
       final mockedSink = MockWebSocketSink();
 
+      final incoming = StreamController<dynamic>.broadcast();
+      addTearDown(incoming.close);
       when(() => mockedSocketChannel.sink).thenReturn(mockedSink);
+      when(() => mockedSocketChannel.ready).thenAnswer((_) => Future.value());
+      when(
+        () => mockedSocketChannel.stream,
+      ).thenAnswer((_) => incoming.stream);
       when(
         () => mockedSink.close(any(), any()),
       ).thenAnswer((_) => Future.value());
@@ -315,8 +321,9 @@ void main() {
       const tCode = 12;
       const tReason = 'reason';
 
+      // The kernel owns the transport, so the close code and reason reach the
+      // sink through the close effect rather than a direct sink call.
       await mockedSocket.connect();
-      mockedSocket.connectionState = SocketState.open;
       await Future.delayed(const Duration(milliseconds: 200));
       await mockedSocket.disconnect(code: tCode, reason: tReason);
       await Future.delayed(const Duration(milliseconds: 200));
@@ -329,22 +336,32 @@ void main() {
       ).called(1);
     });
 
-    test('disconnecting a closed connections stays closed', () async {
-      await socket.connect();
-      expect(socket.connectionState, SocketState.open);
-      await mockServer.close();
-      await Future.delayed(const Duration(milliseconds: 200));
-      expect(socket.connectionState, SocketState.closed);
-      expect(socket.connection, isNotNull);
+    test(
+      'disconnecting a dropped connection settles on disconnected',
+      () async {
+        await socket.connect();
+        expect(socket.connectionState, SocketState.open);
+        await mockServer.close();
+        await Future.delayed(const Duration(milliseconds: 200));
+        // Dropped by the peer while the intent is still up, so a reconnect is
+        // pending: that is what `closed` means.
+        expect(socket.connectionState, SocketState.closed);
+        expect(socket.connection, isNotNull);
 
-      final disconnectFuture = socket.disconnect();
+        final disconnectFuture = socket.disconnect();
 
-      // `connectionState` stays `closed` during disconnect
-      expect(socket.connectionState, SocketState.closed);
-      await disconnectFuture;
-      expect(socket.connectionState, SocketState.closed);
-      expect(socket.connection, isNull);
-    });
+        // Behaviour change: this used to report `closed` for the whole
+        // disconnect, because _preserveLegacyClosedState pinned it there. An
+        // explicit disconnect drops the intent and cancels the pending
+        // reconnect, so `closed` misreported it; `disconnected` is the state
+        // that means "down because you asked". The property the old assertion
+        // guarded still holds: the state does not flicker part-way through.
+        expect(socket.connectionState, SocketState.disconnected);
+        await disconnectFuture;
+        expect(socket.connectionState, SocketState.disconnected);
+        expect(socket.connection, isNull);
+      },
+    );
 
     test('cancels a pending reconnect after an unexpected drop', () async {
       final streamController = StreamController<dynamic>();
@@ -856,14 +873,18 @@ void main() {
       );
       mockedSink = MockWebSocketSink();
 
+      final incoming = StreamController<dynamic>.broadcast();
+      addTearDown(incoming.close);
       when(() => mockedSocketChannel.sink).thenReturn(mockedSink);
       when(() => mockedSocketChannel.ready).thenAnswer((_) => Future.value());
+      when(
+        () => mockedSocketChannel.stream,
+      ).thenAnswer((_) => incoming.stream);
       when(() => mockedSink.close()).thenAnswer((_) => Future.value());
     });
 
-    test('sends data to connection when connected', () {
-      unawaited(mockedSocket.connect());
-      mockedSocket.connectionState = SocketState.open;
+    test('sends data to connection when connected', () async {
+      await mockedSocket.connect();
 
       final message = Message(
         topic: topic,
@@ -880,7 +901,6 @@ void main() {
 
     test('buffers data when not connected', () async {
       unawaited(mockedSocket.connect());
-      mockedSocket.connectionState = SocketState.connecting;
 
       expect(mockedSocket.sendBuffer, isEmpty);
 
@@ -902,9 +922,8 @@ void main() {
       ).called(1);
     });
 
-    test('sends a broadcast with a binary payload as a binary frame', () {
-      unawaited(mockedSocket.connect());
-      mockedSocket.connectionState = SocketState.open;
+    test('sends a broadcast with a binary payload as a binary frame', () async {
+      await mockedSocket.connect();
 
       final binaryPayload = Uint8List.fromList([1, 2, 3]);
       final message = Message(
@@ -923,11 +942,16 @@ void main() {
       ).called(1);
     });
 
-    test('encodes with the legacy object format when version is v1', () {
+    test('encodes with the legacy object format when version is v1', () async {
       final legacyChannel = MockIOWebSocketChannel();
       final legacySink = MockWebSocketSink();
+      final legacyChannelIncoming = StreamController<dynamic>.broadcast();
+      addTearDown(legacyChannelIncoming.close);
       when(() => legacyChannel.sink).thenReturn(legacySink);
       when(() => legacyChannel.ready).thenAnswer((_) => Future.value());
+      when(
+        () => legacyChannel.stream,
+      ).thenAnswer((_) => legacyChannelIncoming.stream);
       when(() => legacySink.close()).thenAnswer((_) => Future.value());
 
       final legacySocket = RealtimeClient(
@@ -935,8 +959,7 @@ void main() {
         transport: (url, headers) => legacyChannel,
         version: RealtimeProtocolVersion.v1,
       );
-      unawaited(legacySocket.connect());
-      legacySocket.connectionState = SocketState.open;
+      await legacySocket.connect();
 
       final legacyData = json.encode({
         'topic': topic,
@@ -958,11 +981,16 @@ void main() {
       ).called(1);
     });
 
-    test('uses a custom encode override when provided', () {
+    test('uses a custom encode override when provided', () async {
       final customChannel = MockIOWebSocketChannel();
       final customSink = MockWebSocketSink();
+      final customChannelIncoming = StreamController<dynamic>.broadcast();
+      addTearDown(customChannelIncoming.close);
       when(() => customChannel.sink).thenReturn(customSink);
       when(() => customChannel.ready).thenAnswer((_) => Future.value());
+      when(
+        () => customChannel.stream,
+      ).thenAnswer((_) => customChannelIncoming.stream);
       when(() => customSink.close()).thenAnswer((_) => Future.value());
 
       final customSocket = RealtimeClient(
@@ -970,8 +998,7 @@ void main() {
         transport: (url, headers) => customChannel,
         encode: (_) => 'custom-frame',
       );
-      unawaited(customSocket.connect());
-      customSocket.connectionState = SocketState.open;
+      await customSocket.connect();
 
       customSocket.push(
         Message(topic: topic, payload: payload, event: event, ref: ref),
@@ -1343,18 +1370,23 @@ void main() {
       );
       mockedSink = MockWebSocketSink();
 
+      final incoming = StreamController<dynamic>.broadcast();
+      addTearDown(incoming.close);
       when(() => mockedSocketChannel.sink).thenReturn(mockedSink);
       when(() => mockedSink.close()).thenAnswer((_) => Future.value());
       when(() => mockedSocketChannel.ready).thenAnswer((_) => Future.value());
-
-      unawaited(mockedSocket.connect());
+      when(
+        () => mockedSocketChannel.stream,
+      ).thenAnswer((_) => incoming.stream);
     });
 
     //! Unimplemented Test: closes socket when heartbeat is not ack'd within
     //! heartbeat window
 
     test('pushes heartbeat data when connected', () async {
-      mockedSocket.connectionState = SocketState.open;
+      // Connecting for real arms the kernel heartbeat timer that
+      // sendHeartbeat drives; faking connectionState would not.
+      await mockedSocket.connect();
 
       await mockedSocket.sendHeartbeat();
 
@@ -1362,8 +1394,6 @@ void main() {
     });
 
     test('no ops when not connected', () async {
-      mockedSocket.connectionState = SocketState.connecting;
-
       await mockedSocket.sendHeartbeat();
       verifyNever(() => mockedSink.add(any()));
     });
@@ -1381,7 +1411,12 @@ void main() {
         when(
           () => mockedSocketChannel.ready,
         ).thenAnswer((_) => readyCompleter.future);
+        final incoming = StreamController<dynamic>.broadcast();
+        addTearDown(incoming.close);
         when(() => mockedSocketChannel.sink).thenReturn(mockedSink);
+        when(
+          () => mockedSocketChannel.stream,
+        ).thenAnswer((_) => incoming.stream);
         when(
           () => mockedSink.close(any(), any()),
         ).thenAnswer((_) => Future.value());
@@ -1421,7 +1456,12 @@ void main() {
         when(
           () => mockedSocketChannel.ready,
         ).thenAnswer((_) => readyCompleter.future);
+        final incoming = StreamController<dynamic>.broadcast();
+        addTearDown(incoming.close);
         when(() => mockedSocketChannel.sink).thenReturn(mockedSink);
+        when(
+          () => mockedSocketChannel.stream,
+        ).thenAnswer((_) => incoming.stream);
         when(
           () => mockedSink.close(any(), any()),
         ).thenAnswer((_) => Future.value());
@@ -1455,7 +1495,12 @@ void main() {
       when(
         () => mockedSocketChannel1.ready,
       ).thenAnswer((_) => readyCompleter1.future);
+      final streamController1 = StreamController<dynamic>.broadcast();
+      addTearDown(streamController1.close);
       when(() => mockedSocketChannel1.sink).thenReturn(mockedSink1);
+      when(
+        () => mockedSocketChannel1.stream,
+      ).thenAnswer((_) => streamController1.stream);
       when(
         () => mockedSink1.close(any(), any()),
       ).thenAnswer((_) => Future.value());
