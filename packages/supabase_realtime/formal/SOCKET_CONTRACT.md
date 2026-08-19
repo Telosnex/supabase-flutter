@@ -372,28 +372,6 @@ here to remove semantic choices before syntax work starts.
 `S1` through `S6` retain the stable ADR names. `T1` through `T6` are structural
 properties needed for conformance and vacuity checks.
 
-## Liveness profile
-
-Safety checking uses no fairness assumption. Liveness uses a separate config
-with these named assumptions:
-
-- `WF_EventLoop`: a queued kernel event is eventually processed.
-- `WF_CurrentTimer`: a continuously armed current timer eventually fires.
-- `WF_CloseOutcome`: a requested close eventually reports closed, failed, or
-  timed out.
-- `WF_HealedOpen`: while intent stays up and the network stays healed, a current
-  open request eventually succeeds.
-
-Under those assumptions:
-
-- `L3_DownEventuallyQuiescent`: stable down intent eventually reaches `idle`
-  with no active generation, debt, or armed timer.
-- `L4_UpEventuallyOpen`: stable up intent with a healed network eventually
-  reaches `open`.
-
-No fairness assumption applies to token resolution because token completion is
-outside this lifecycle slice.
-
 ## Finite review scope
 
 The first deterministic review config uses:
@@ -413,11 +391,6 @@ current one. At the identity bound, the safety model takes a visible
 TLC-only `ScopeExhausted` terminal action. Oracle export excludes that action.
 The runner reports how many boundary states it reached and repeats with a
 larger local profile.
-
-The liveness profile uses `current` and `stale` identity classes instead of
-numeric allocation. It therefore checks convergence without claiming
-unbounded identity uniqueness. Safety claims remain tied to the numeric finite
-review scope.
 
 ## First-slice mutant matrix
 

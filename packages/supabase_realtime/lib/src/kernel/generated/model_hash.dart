@@ -2,4 +2,4 @@
 // Hashes the reviewed TLA+ model and deterministic configurations.
 
 const realtimeSocketModelSha256 =
-    'f331aee9701c65890dbcb23edb2748597e560f1ca17aa506709ae9b9a6f545b6';
+    'e132a3d3b686f9f04fdd71802b169f2dcebe4b4ec8f6539b757d312a3e651d3e';

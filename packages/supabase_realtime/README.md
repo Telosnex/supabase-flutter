@@ -59,9 +59,8 @@ supabase stop
 The socket lifecycle is implemented as a pure reducer shared by the production
 client and TLA+ specifications. Channel and push lifecycle use the same
 generated event/effect architecture. The deterministic gate checks safety,
-weak-fairness liveness, ten lifecycle mutants, 103,797 finite oracle rows,
-twelve Dart reinjection patches, shortest prefixes, and concrete/randomized
-trace replay:
+ten lifecycle mutants, 103,797 finite oracle rows, twelve Dart reinjection
+patches, shortest prefixes, and concrete/randomized trace replay:
 
 ```bash
 dart run formal/tool/run_tlc.dart

@@ -9,7 +9,6 @@ now live beside it; see `README.md` for current commands and baselines.
 | Role | Package | Revision |
 |---|---|---|
 | Primary | `supabase_realtime 3.0.0-dev.1` | `07345bf9568a0ba495f1e34cb6ba542eddecc7e9` |
-| Production compatibility | `realtime_client 2.13.0` plus Telosnex fixes | `1444084fa5c09866c7d0781172ec00ff3d8d2075` |
 
 The primary revision is the last Realtime-changing commit reachable from the
 selected upstream head. Do not silently move this pin. Rebase only at an
@@ -32,8 +31,6 @@ and callback or stream APIs are adapter details.
 - One user action can overlap asynchronous library work.
 - Explicit disconnect intent dominates automatic reconnect intent.
 - No fairness assumption is used to establish a safety property.
-- Weak fairness can be enabled for selected environment actions when checking a
-  liveness property. Every such assumption must be named in its model config.
 
 ### State hidden behind adapters
 
@@ -97,9 +94,8 @@ The model, finite configurations, and runner implement this fixed contract:
 4. Run each historical mutant and require its expected invariant to fail.
 5. Record generated states, distinct states, queue depth, and search depth.
 6. Fail when a mutant unexpectedly passes or its expected violation disappears.
-7. Keep safety and liveness profiles separate.
-8. Use fixed worker and seed settings in the reproducible profile.
-9. Permit a larger local exploration profile without making it the review gate.
+7. Use fixed worker and seed settings in the reproducible profile.
+8. Permit a larger local exploration profile without making it the review gate.
 
 State counts are baselines, not proofs. Review count changes with the model diff
 instead of requiring exact equality forever.

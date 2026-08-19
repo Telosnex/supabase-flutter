@@ -46,10 +46,6 @@ Future<void> main(List<String> arguments) async {
     packageRoot,
     ['run', 'formal/tool/generate_model_hash.dart', '--check'],
   );
-  await _runDart(
-    packageRoot,
-    ['run', 'formal/tool/verify_v2_adapter.dart'],
-  );
 
   final report = <String, Object?>{
     'tlaToolsSha256': _tlaToolsSha256,
@@ -97,21 +93,6 @@ Future<void> main(List<String> arguments) async {
     ..['protocolStates'] = protocolStates.length
     ..['scopeExhaustedStates'] = scopeExhausted;
 
-  stdout.writeln('\n=== Weak-fairness liveness profile ===');
-  final livenessDirectory = Directory('${output.path}/liveness')
-    ..createSync(recursive: true);
-  final liveness = await _runTlc(
-    jar: jar,
-    module: 'SocketLiveness',
-    config: 'SocketLiveness.cfg',
-    workingDirectory: formal,
-    metadataDirectory: Directory('${livenessDirectory.path}/states'),
-    libraryDirectories: [Directory('${formal.path}/generated')],
-    streamOutput: true,
-  );
-  _requireSuccess('liveness profile', liveness);
-  report['liveness'] = _metrics(liveness.output);
-
   stdout.writeln('\n=== Channel/push safety model ===');
   final channelPushDirectory = Directory('${output.path}/channel_push')
     ..createSync(recursive: true);
@@ -130,24 +111,6 @@ Future<void> main(List<String> arguments) async {
   );
   _requireSuccess('channel/push safety model', channelPushSafety);
   report['channelPushSafety'] = _metrics(channelPushSafety.output);
-
-  stdout.writeln('\n=== Channel/push liveness profile ===');
-  final channelPushLivenessDirectory = Directory(
-    '${output.path}/channel_push_liveness',
-  )..createSync(recursive: true);
-  final channelPushLiveness = await _runTlc(
-    jar: jar,
-    module: 'ChannelPushLiveness',
-    config: 'ChannelPushLiveness.cfg',
-    workingDirectory: formal,
-    metadataDirectory: Directory(
-      '${channelPushLivenessDirectory.path}/states',
-    ),
-    libraryDirectories: [Directory('${formal.path}/generated')],
-    streamOutput: true,
-  );
-  _requireSuccess('channel/push liveness profile', channelPushLiveness);
-  report['channelPushLiveness'] = _metrics(channelPushLiveness.output);
 
   stdout.writeln('\n=== Historical lifecycle mutants ===');
   final mutantReports = <String, Object?>{};

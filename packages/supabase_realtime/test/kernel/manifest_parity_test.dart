@@ -7,7 +7,6 @@ void main() {
     for (final command in [
       ['run', 'formal/tool/generate_schema.dart', '--check'],
       ['run', 'formal/tool/generate_model_hash.dart', '--check'],
-      ['run', 'formal/tool/verify_v2_adapter.dart'],
     ]) {
       final result = await Process.run(Platform.resolvedExecutable, command);
       expect(

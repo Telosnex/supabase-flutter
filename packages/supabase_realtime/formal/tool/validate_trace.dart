@@ -207,8 +207,23 @@ INVARIANT TraceEntryOK
     workingDirectory: directory.path,
   ).timeout(const Duration(seconds: 30));
   final output = '${result.stdout}${result.stderr}';
+  final stateMetrics = RegExp(
+    r'([0-9,]+) states? generated, ([0-9,]+) distinct states? found',
+  ).allMatches(output).lastOrNull;
+  final depthMetric = RegExp(
+    r'The depth of the complete state graph search is ([0-9,]+)',
+  ).firstMatch(output);
+  int? metric(RegExpMatch? match, int group) =>
+      match == null ? null : int.parse(match.group(group)!.replaceAll(',', ''));
+  final generatedStates = metric(stateMetrics, 1);
+  final distinctStates = metric(stateMetrics, 2);
+  final searchDepth = metric(depthMetric, 1);
+  final expectedStates = entries.length;
   if (result.exitCode != 0 ||
-      !output.contains('Model checking completed. No error has been found.')) {
+      !output.contains('Model checking completed. No error has been found.') ||
+      generatedStates != expectedStates ||
+      distinctStates != expectedStates ||
+      searchDepth != expectedStates) {
     throw StateError('TLC trace validation failed:\n$output');
   }
 }
@@ -390,4 +405,14 @@ final class _Options {
 
   final String trace;
   final String? jar;
+}
+
+extension<T> on Iterable<T> {
+  T? get lastOrNull {
+    T? result;
+    for (final value in this) {
+      result = value;
+    }
+    return result;
+  }
 }
