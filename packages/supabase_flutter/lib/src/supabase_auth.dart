@@ -56,6 +56,10 @@ class SupabaseAuth with WidgetsBindingObserver {
   static WidgetsBinding get _widgetsBindingInstance => WidgetsBinding.instance;
 
   late LocalStorage _localStorage;
+  late GoTrueClient _auth;
+  bool _disposed = false;
+  bool _initialSessionFailed = false;
+  int _authRevision = 0;
 
   /// Whether to automatically refresh the token
   late bool _autoRefreshToken;
@@ -84,15 +88,22 @@ class SupabaseAuth with WidgetsBindingObserver {
   /// Errors emitted by the auth state change stream (e.g. during token refresh
   /// or network failures) are logged by the underlying auth client and do not
   /// propagate as unhandled zone errors.
-  Future<void> initialize({
-    required FlutterAuthClientOptions options,
-  }) async {
+  Future<void> initialize({required FlutterAuthClientOptions options}) async {
+    _auth = Supabase.instance.client.auth;
+    final revision = _authRevision;
+    void checkCurrent() {
+      if (_disposed || revision != _authRevision) {
+        throw const SessionRestorationException();
+      }
+    }
+
     _localStorage = options.localStorage!;
     _autoRefreshToken = options.autoRefreshToken;
     _detectSessionInUriPredicate = options.detectSessionInUriPredicate;
 
-    _authSubscription = Supabase.instance.client.auth.onAuthStateChange.listen(
+    _authSubscription = _auth.onAuthStateChange.listen(
       (data) {
+        if (data.event != AuthChangeEvent.initialSession) _authRevision++;
         unawaited(_onAuthStateChange(data.event, data.session));
       },
       onError: (error, stackTrace) {
@@ -103,18 +114,22 @@ class SupabaseAuth with WidgetsBindingObserver {
     );
 
     await _localStorage.initialize();
+    checkCurrent();
 
     final hasPersistedSession = await _localStorage.hasAccessToken();
+    checkCurrent();
     var shouldEmitInitialSession = true;
     if (hasPersistedSession) {
       final persistedSession = await _localStorage.accessToken();
+      checkCurrent();
       if (persistedSession != null) {
         try {
-          await Supabase.instance.client.auth.setInitialSession(
+          await _auth.setInitialSession(
             persistedSession,
           );
           shouldEmitInitialSession = false;
         } catch (error, stackTrace) {
+          _initialSessionFailed = true;
           _log.warning(
             'Error while setting initial session',
             error,
@@ -123,8 +138,9 @@ class SupabaseAuth with WidgetsBindingObserver {
         }
       }
     }
+    checkCurrent();
     if (shouldEmitInitialSession) {
-      Supabase.instance.client.auth
+      _auth
       // ignore: invalid_use_of_internal_member
       .notifyAllSubscribers(AuthChangeEvent.initialSession);
     }
@@ -139,25 +155,37 @@ class SupabaseAuth with WidgetsBindingObserver {
 
   /// Recovers the session from local storage.
   ///
-  /// Called lazily after `.initialize()` by `Supabase` instance
-  Future<void> recoverSession() async {
+  /// Called lazily after `.initialize()` by `Supabase` instance. Returns false
+  /// on failure/interruption so the public restoration barrier can fail closed
+  /// without forwarding token-bearing storage/HTTP exceptions.
+  Future<bool> recoverSession() async {
+    // Retain the client before IO: a disposed recovery must never look up a
+    // newly initialized singleton and install the previous account into it.
+    final auth = _auth;
+    final revision = _authRevision;
+    bool isCurrent() => !_disposed && revision == _authRevision;
     try {
       final hasPersistedSession = await _localStorage.hasAccessToken();
+      if (!isCurrent()) return false;
       if (hasPersistedSession) {
         final persistedSession = await _localStorage.accessToken();
+        if (!isCurrent()) return false;
         if (persistedSession != null) {
-          await Supabase.instance.client.auth.recoverSession(persistedSession);
+          await auth.recoverSession(persistedSession);
         }
       }
+      return !_disposed && !_initialSessionFailed;
     } on AuthException catch (error, stackTrace) {
       _log.warning(error.message, error, stackTrace);
     } catch (error, stackTrace) {
       _log.warning("Error while recovering session", error, stackTrace);
     }
+    return false;
   }
 
   /// Dispose the instance to free up resources
   void dispose() {
+    _disposed = true;
     if (isRunningInFlutterTest) {
       _initialDeeplinkIsHandled = false;
     }
@@ -382,11 +410,7 @@ extension GoTrueClientSignInProvider on GoTrueClient {
       launchMode = LaunchMode.externalApplication;
     }
 
-    return launchUrl(
-      uri,
-      mode: launchMode,
-      webOnlyWindowName: '_self',
-    );
+    return launchUrl(uri, mode: launchMode, webOnlyWindowName: '_self');
   }
 
   /// Attempts a single-sign on using an enterprise Identity Provider. A
