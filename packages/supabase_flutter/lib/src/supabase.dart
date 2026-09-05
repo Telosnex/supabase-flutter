@@ -18,6 +18,14 @@ import 'version.dart';
 
 final _log = Logger('supabase.supabase_flutter');
 
+/// Startup restoration failed or was interrupted. Contains no session data.
+class SessionRestorationException implements Exception {
+  const SessionRestorationException();
+
+  @override
+  String toString() => 'Session restoration failed or was interrupted.';
+}
+
 /// Supabase instance.
 ///
 /// It must be initialized before used, otherwise an error is thrown.
@@ -148,15 +156,34 @@ class Supabase {
       accessToken: accessToken,
     );
 
+    final restoration = _instance._sessionRestoration;
     if (accessToken == null) {
       final supabaseAuth = SupabaseAuth();
       _instance._supabaseAuth = supabaseAuth;
-      await supabaseAuth.initialize(options: authOptions);
+      try {
+        await supabaseAuth.initialize(options: authOptions);
+      } catch (_) {
+        if (!restoration.isCompleted) {
+          restoration.completeError(const SessionRestorationException());
+        }
+        rethrow;
+      }
 
-      // Wrap `recoverSession()` in a `CancelableOperation` so that it can be canceled in dispose
-      // if still in progress
+      // Observe the underlying operation, not CancelableOperation.value:
+      // cancellation suppresses that value forever, but does not cancel IO.
+      final recovery = supabaseAuth.recoverSession().then((succeeded) {
+        if (!restoration.isCompleted) {
+          if (succeeded) {
+            restoration.complete();
+          } else {
+            restoration.completeError(const SessionRestorationException());
+          }
+        }
+      });
       _instance._restoreSessionCancellableOperation =
-          CancelableOperation.fromFuture(supabaseAuth.recoverSession());
+          CancelableOperation.fromFuture(recovery);
+    } else {
+      restoration.complete(); // Third-party accessToken mode has no recovery.
     }
 
     _log.info('***** Supabase init completed *****');
@@ -176,6 +203,21 @@ class Supabase {
   ///
   /// Throws an error if [Supabase.initialize] was not called.
   late SupabaseClient client;
+
+  late Completer<void> _sessionRestoration;
+
+  /// Completes after this initialization's persisted-session recovery,
+  /// including any token refresh it awaits. Unlike [initialize] returning or
+  /// `initialSession`, success means that startup recovery is no longer pending.
+  /// It does NOT assert signed-in/signed-out state or wait for app listeners,
+  /// persistence writes, future refreshes or unrelated auth operations.
+  ///
+  /// Throws [SessionRestorationException] on recovery failure or disposal before
+  /// completion. Disposal does not cancel already-dispatched IO. Await success
+  /// and recheck current identity before dispatching account-changing work.
+  /// No recovery runs with a custom `accessToken`; that mode completes normally.
+  /// A future retained across dispose/reinitialize belongs to the old lifecycle.
+  Future<void> get sessionRestorationComplete => _sessionRestoration.future;
 
   SupabaseAuth? _supabaseAuth;
 
@@ -204,10 +246,14 @@ class Supabase {
   /// Dispose the instance to free up resources.
   Future<void> dispose() async {
     _targetLifecycleState = null;
+    if (!_sessionRestoration.isCompleted) {
+      _sessionRestoration.completeError(const SessionRestorationException());
+    }
+    _supabaseAuth?.dispose();
+    _supabaseAuth = null;
     await _restoreSessionCancellableOperation?.cancel();
     await _logSubscription?.cancel();
     await client.dispose();
-    _instance._supabaseAuth?.dispose();
     _lifecycleListener?.dispose();
     _isInitialized = false;
   }
@@ -224,10 +270,12 @@ class Supabase {
     required TracePropagationOptions tracePropagationOptions,
     required Future<String?> Function()? accessToken,
   }) {
-    final headers = {
-      ...Constants.defaultHeaders,
-      ...?customHeaders,
-    };
+    _sessionRestoration = Completer<void>();
+    // The API is opt-in; background failure must not become an unhandled error
+    // when nobody observes it. Awaiters still receive the original failure.
+    _sessionRestoration.future.ignore();
+    _restoreSessionCancellableOperation = null;
+    final headers = {...Constants.defaultHeaders, ...?customHeaders};
     client = SupabaseClient(
       supabaseUrl,
       supabaseKey,
