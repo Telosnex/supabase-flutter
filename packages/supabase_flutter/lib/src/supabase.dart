@@ -162,6 +162,10 @@ class Supabase {
       _instance._supabaseAuth = supabaseAuth;
       try {
         await supabaseAuth.initialize(options: authOptions);
+        if (restoration.isCompleted) {
+          // Disposed while initialization (e.g. deep-link IO) was pending.
+          throw const SessionRestorationException();
+        }
       } catch (_) {
         if (!restoration.isCompleted) {
           restoration.completeError(const SessionRestorationException());
