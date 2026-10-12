@@ -644,6 +644,9 @@ class RealtimeClient {
       if (channel.joinedOnce && channel.isJoined) {
         channel.push(ChannelEvents.accessToken, {'access_token': tokenToSend});
       }
+      // A join rejected for an expired token would otherwise wait for its
+      // next backoff tick, up to 10 seconds, before it uses this token.
+      if (tokenToSend != null) channel.rejoinNowIfErrored();
     }
   }
 
