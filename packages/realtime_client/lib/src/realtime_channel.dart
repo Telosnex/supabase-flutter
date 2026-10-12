@@ -116,6 +116,18 @@ class RealtimeChannel {
     presence = RealtimePresence(this);
   }
 
+  /// Rejoins an errored channel now, without waiting for the backoff timer.
+  ///
+  /// Used when a new access token arrives: a join that failed with the old
+  /// token can succeed now. Backoff tries are kept, so a join that fails
+  /// again still backs off.
+  @internal
+  void rejoinNowIfErrored() {
+    if (!isErrored || !socket.isConnected) return;
+    _rejoinTimer.cancel();
+    rejoin();
+  }
+
   @internal
   void rejoinUntilConnected() {
     if (socket.isConnected) {
