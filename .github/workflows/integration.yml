@@ -60,8 +60,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: Telosnex/telosnex_ci_tools/actions/setup-flutter@cba77fc0d4330f1bef81193c53cd7dd976f0ebcf # v0.5.3
-      - run: dart pub get
-        working-directory: packages/realtime_client
+      - run: flutter pub get
       - id: files
         working-directory: packages/realtime_client
         run: |
