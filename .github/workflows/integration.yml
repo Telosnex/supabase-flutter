@@ -65,6 +65,7 @@ jobs:
         working-directory: packages/realtime_client
         run: |
           list=$(grep -L "@TestOn('vm')" $(find test -name '*_test.dart') || true)
+          list=$(echo "$list" | tr '\n' ' ')
           echo "list=$list" >> "$GITHUB_OUTPUT"
       - uses: Telosnex/telosnex_ci_tools/actions/dart-test-browser@cba77fc0d4330f1bef81193c53cd7dd976f0ebcf # v0.5.3
         with:

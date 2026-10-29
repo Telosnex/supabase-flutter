@@ -1313,13 +1313,9 @@ void main() {
         event: 'test',
         payload: {'data': 'test'},
       );
-
-      final request = await requestFuture;
-      request.response.statusCode = 500;
-      request.response.write(json.encode({'error': 'Server error'}));
-      await request.response.close();
-
-      await expectLater(
+      // Listen before the response is written: on a slow runner the failed
+      // future would otherwise be reported as unhandled.
+      final expectation = expectLater(
         sendFuture,
         throwsA(
           predicate(
@@ -1327,6 +1323,13 @@ void main() {
           ),
         ),
       );
+
+      final request = await requestFuture;
+      request.response.statusCode = 500;
+      request.response.write(json.encode({'error': 'Server error'}));
+      await request.response.close();
+
+      await expectation;
     });
 
     test('handles timeout', () async {
