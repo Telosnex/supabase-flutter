@@ -50,6 +50,33 @@ void main() {
   });
 
   test(
+    'invokes customAccessToken on each heartbeat to rotate the JWT',
+    () async {
+      var customCalls = 0;
+      final rotatingClient = RealtimeClient(
+        'wss://localhost:0/',
+        params: {'apikey': 'initial-token'},
+        customAccessToken: () async {
+          customCalls++;
+          return 'rotated-token-$customCalls';
+        },
+      );
+      rotatingClient.connState = SocketStates.open;
+
+      await rotatingClient.sendHeartbeat();
+
+      expect(
+        customCalls,
+        1,
+        reason:
+            'sendHeartbeat must consult customAccessToken so callers can '
+            'rotate JWTs without manually calling setAuth',
+      );
+      expect(rotatingClient.accessToken, 'rotated-token-1');
+    },
+  );
+
+  test(
     'emits timeout when the previous heartbeat was not acknowledged',
     () async {
       client.connState = SocketStates.open;

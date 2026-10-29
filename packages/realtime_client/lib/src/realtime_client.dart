@@ -311,7 +311,19 @@ class RealtimeClient {
       );
     } catch (e) {
       /// General error handling
+      // A synchronous transport throw happens after entering `connecting` but
+      // before assigning `connection`. Recover the state so the client is not
+      // wedged at connecting with no connection for disconnect() to close.
+      if (connState == SocketStates.connecting) {
+        connState = SocketStates.closed;
+      }
       _onConnError(e);
+      // Mirror the async `ready` failure path: synchronous transport failures
+      // must also retry unless a concurrent user disconnect changed intent.
+      if (connState != SocketStates.disconnected &&
+          connState != SocketStates.disconnecting) {
+        reconnectTimer.scheduleTimeout();
+      }
     }
   }
 
@@ -323,6 +335,10 @@ class RealtimeClient {
   /// Disconnects the socket with status [code] and [reason] for the disconnect
   Future<void> disconnect({int? code, String? reason}) async {
     _cancelPendingDisconnect();
+    // Cancel reconnect regardless of connection state. This covers both a
+    // dropped socket and a synchronous transport failure that scheduled a
+    // retry before `conn` was assigned.
+    reconnectTimer.cancel();
     final conn = this.conn;
     if (conn != null) {
       final oldState = connState;
@@ -369,12 +385,6 @@ class RealtimeClient {
         connState = SocketStates.disconnected;
         log('transport', 'disconnected', null, Level.FINE);
       }
-
-      // Cancel any reconnect scheduled by `_onConnClose`. When the socket has
-      // already dropped (`connState == closed`) the block above is skipped, so
-      // without this an armed backoff timer would fire after the user
-      // explicitly disconnected and silently reopen the connection.
-      reconnectTimer.cancel();
 
       this.conn = null;
       await _connectionSubscription?.cancel();
@@ -634,6 +644,9 @@ class RealtimeClient {
       if (channel.joinedOnce && channel.isJoined) {
         channel.push(ChannelEvents.accessToken, {'access_token': tokenToSend});
       }
+      // A join rejected for an expired token would otherwise wait for its
+      // next backoff tick, up to 10 seconds, before it uses this token.
+      if (tokenToSend != null) channel.rejoinNowIfErrored();
     }
   }
 
@@ -657,6 +670,10 @@ class RealtimeClient {
     log('transport', 'connected', null, Level.FINE);
     unawaited(_resolveAccessTokenAndFlush());
     reconnectTimer.reset();
+    // A fresh session starts clean. Any pending heartbeat here belongs to a
+    // previous socket that closed before its reply arrived; leaving it set
+    // would make the first heartbeat tick close this new session as timed out.
+    pendingHeartbeatRef = null;
     if (heartbeatTimer != null) heartbeatTimer!.cancel();
     heartbeatTimer = Timer.periodic(
       Duration(milliseconds: heartbeatIntervalMs),
@@ -797,6 +814,10 @@ class RealtimeClient {
       ),
     );
     _heartbeatController.add(RealtimeHeartbeatStatus.sent);
-    await setAuth(accessToken);
+    // Pass null so setAuth's
+    // `token ?? customAccessToken() ?? accessToken` chain actually invokes
+    // customAccessToken. Passing the current accessToken short-circuits the
+    // first `??` and prevents JWT rotation.
+    await setAuth(null);
   }
 }
