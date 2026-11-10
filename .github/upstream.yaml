@@ -1,0 +1,12 @@
+# Upstream sources, checked daily by the Upstream watch workflow
+# (telosnex_ci_tools, lib/src/upstream.dart). Set `seen` to skip an update.
+sources:
+  # The repository this one is a fork of. The pin is the last upstream commit
+  # merged here: update it with each merge. Alert once the oldest unmerged
+  # commit is a week old.
+  - name: supabase/supabase-flutter
+    branch: https://github.com/supabase/supabase-flutter
+    pin: 5be5a16228aeb98985f5cf741aefd5fba2bf6353
+    lag_days: 7
+    # The packages that the app takes from this fork.
+    paths: [packages/supabase_flutter, packages/realtime_client]
