@@ -5,7 +5,7 @@ import 'dart:math';
 import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart';
 import 'package:logging/logging.dart';
 import 'package:supabase_common/supabase_common.dart';
